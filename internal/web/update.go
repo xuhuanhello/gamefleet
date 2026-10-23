@@ -162,7 +162,7 @@ func updateStepsTo(v string, st update.Status) *updateSteps {
 		s.Action, s.Label = "download", "重新下载"
 	case mine && st.State == update.Downloaded:
 		download.State = "done"
-		s.Detail = "重启时 GameFleet 停十几秒：这期间新的对局分配不到战斗服，正在打的对局不受影响；所有人都要重新登录控制台。"
+		s.Detail = "重启时 GameFleet 停十几秒：匹配服务按 matchId 重试的话，新的对局只是多等一会儿，正在打的对局不受影响；所有人都要重新登录控制台。"
 		s.Action, s.Label = "apply", "重启并更新"
 	case mine && st.State == update.Applying:
 		download.State, restart.State = "done", "now"
