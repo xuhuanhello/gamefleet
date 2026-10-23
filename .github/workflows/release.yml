@@ -51,6 +51,6 @@ jobs:
         run: |
           git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
-          tar -czf gamefleet-deploy.tar.gz -C deploy .
+          tar --owner=0 --group=0 --numeric-owner -czf gamefleet-deploy.tar.gz -C deploy .
           gh release create "$GITHUB_REF_NAME" --title "GameFleet $GITHUB_REF_NAME" --notes-file notes.md \
             gamefleet-deploy.tar.gz deploy/install.sh

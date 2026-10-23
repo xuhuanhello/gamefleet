@@ -47,6 +47,10 @@ while [ $# -gt 0 ]; do
 done
 
 [ -f compose.yaml ] && [ -f Caddyfile ] && [ -f .env.example ] || fail "要在放着 compose.yaml、Caddyfile 和 .env.example 的目录里执行"
+# The updater runs the scripts here as root, so only root may change them.
+chown root:root .
+chmod go-w .
+find . -maxdepth 1 -type f -exec chown root:root {} + -exec chmod go-w {} +
 [ -n "$image" ] || [ "$VERSION" = dev ] || image=$IMAGE_REPO:$VERSION
 [ -n "$domain" ] && [ -n "$email" ] && [ -n "$image" ] ||
 	fail "用法：sh install.sh --domain 域名 --email 证书联系邮箱 [--image 镜像]"
@@ -142,11 +146,12 @@ until ready; do
 	sleep 5
 done
 
-cat <<EOF
-
-GameFleet：装好了，控制台在 https://$domain
+echo
+say "装好了，控制台在 https://$domain"
+[ -f credentials/console-password ] && cat <<EOF
 控制台账号是 $user。密码和验证器链接只在这台机器上：
   $PWD/credentials/console-password
   $PWD/credentials/console-otpauth
 在你自己的终端里取出来，把链接加进验证器 App；能登录以后就可以删掉这两个文件。
 EOF
+exit 0
