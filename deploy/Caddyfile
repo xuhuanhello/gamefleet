@@ -1,0 +1,10 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# Everything goes to GameFleet, including /v2/: that is the fixed prefix of
+# the image registry protocol, not a GameFleet version. GameFleet checks the
+# caller's API key and passes registry requests on to the registry.
+{$GAMEFLEET_DOMAIN} {
+	reverse_proxy gamefleet:8080
+}

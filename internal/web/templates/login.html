@@ -1,0 +1,17 @@
+{{define "content"}}
+<section class="signin">
+  <div class="brand"><span class="mark"></span>GameFleet</div>
+  <h1>登录</h1>
+  <p class="subline">用密码和验证器 App 上的 6 位验证码登录。</p>
+  {{- if .Data.Failed}}
+  <p class="error">用户名、密码或验证码不对。验证码每 30 秒换一次，每个只能用一次。</p>
+  {{- end}}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{.Data.Next}}">
+    <label>用户名 <input name="name" value="{{.Data.Name}}" autocomplete="username" required autofocus></label>
+    <label>密码 <input type="password" name="password" autocomplete="current-password" required></label>
+    <label>验证码 <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+    <button type="submit" class="primary">登录</button>
+  </form>
+</section>
+{{end}}

@@ -1,0 +1,13 @@
+# Installed by install.sh, which fills in @DIR@. See updater.sh.
+[Unit]
+Description=GameFleet updater: puts in place the releases the console asks for
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/bin/sh @DIR@/updater.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

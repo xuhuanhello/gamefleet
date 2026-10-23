@@ -1,0 +1,609 @@
+// Package release turns registered builds into running game servers and
+// decides which build new matches get. See section 8.2 of the v2 design:
+// every build runs as its own Fleet, and switching versions only changes a
+// route. A deployment no route uses any more drains to zero and is deleted
+// once its last match ends and the retention time has passed.
+package release
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/xuhuanhello/gamefleet/internal/registry"
+	"github.com/xuhuanhello/gamefleet/internal/sites"
+	"github.com/xuhuanhello/gamefleet/internal/store"
+)
+
+// Channels. Nakama puts testers on canary and everyone else on stable.
+const (
+	Stable = "stable"
+	Canary = "canary"
+)
+
+// Labels a build must carry, see section 9.2 of the v2 design.
+const (
+	LabelCompat   = "io.gamefleet.compat"
+	LabelRevision = "org.opencontainers.image.revision"
+	LabelVersion  = "org.opencontainers.image.version"
+)
+
+// Kinds of refusal. Every refusal is an *Error of one of these kinds; the
+// console shows its text as it is, the API maps the kind to a status code.
+var (
+	ErrInvalid  = errors.New("invalid request")
+	ErrNotFound = errors.New("not found")
+	// ErrConflict means the change does not fit the current state, for
+	// example routing to a build that is not deployed anywhere.
+	ErrConflict = errors.New("conflict")
+	// ErrNoRoute means no deployed build serves the match's channel and
+	// compat version in its region.
+	ErrNoRoute = errors.New("route_not_found")
+)
+
+// compatValue is what Nakama accepts as a compat version in matchmaking.
+var compatValue = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// Defaults for a game's first deployment in a cluster. Later deployments
+// start from the previous one's settings.
+var Defaults = store.Deployment{
+	// One idle game server is room for Rooms more matches.
+	Buffer:      1,
+	MaxReplicas: 10,
+	Rooms:       50,
+	Resources:   store.Resources{CPURequest: 250, CPULimit: 2000, MemoryRequest: 256, MemoryLimit: 1024},
+}
+
+// Registry reads pushed images.
+type Registry interface {
+	Inspect(ctx context.Context, repo, ref string) (registry.Image, error)
+}
+
+// Service releases builds.
+type Service struct {
+	store     *store.Store
+	registry  Registry
+	host      string // where clusters pull images from
+	sites     *sites.Directory
+	retention time.Duration
+	log       *slog.Logger
+	kick      chan struct{}
+}
+
+// New returns the service. host is the registry's public host name.
+func New(s *store.Store, reg Registry, host string, dir *sites.Directory, retention time.Duration, log *slog.Logger) *Service {
+	return &Service{store: s, registry: reg, host: host, sites: dir, retention: retention, log: log, kick: make(chan struct{}, 1)}
+}
+
+func (s *Service) site(name string) (sites.Site, bool) { return s.sites.Get(name) }
+
+// Error is a refusal written for the operator, in the console's language.
+type Error struct {
+	Kind error
+	Text string
+}
+
+func (e *Error) Error() string { return e.Text }
+func (e *Error) Unwrap() error { return e.Kind }
+
+func invalid(format string, args ...any) error {
+	return &Error{ErrInvalid, fmt.Sprintf(format, args...)}
+}
+
+func conflict(format string, args ...any) error {
+	return &Error{ErrConflict, fmt.Sprintf(format, args...)}
+}
+
+// --- Builds
+
+// Registration names a pushed image by tag, digest or both.
+type Registration struct {
+	Repository string `json:"repository"`
+	Tag        string `json:"tag"`
+	Digest     string `json:"digest"`
+	Note       string `json:"note"`
+}
+
+// Register records a pushed image as a build. Registering the same image
+// again returns the existing build with created false.
+func (s *Service) Register(ctx context.Context, r Registration, actor string) (b store.Build, created bool, err error) {
+	if r.Tag == "" && r.Digest == "" {
+		return store.Build{}, false, invalid("请给出镜像的 tag 或 digest")
+	}
+	if !printable(r.Note, 500, true) {
+		return store.Build{}, false, invalid("备注最多 500 个字符")
+	}
+	ref := r.Digest
+	if r.Tag != "" {
+		ref = r.Tag
+	}
+	img, err := s.registry.Inspect(ctx, r.Repository, ref)
+	if err != nil {
+		return store.Build{}, false, err
+	}
+	if r.Digest != "" && img.Digest != r.Digest {
+		return store.Build{}, false, invalid("tag %s 指向 %s，不是 %s", r.Tag, img.Digest, r.Digest)
+	}
+	for _, label := range []string{LabelCompat, LabelRevision, LabelVersion} {
+		if img.Labels[label] == "" {
+			return store.Build{}, false, fmt.Errorf("%w：缺少标签 %s", registry.ErrUnusable, label)
+		}
+	}
+	compat := img.Labels[LabelCompat]
+	if !compatValue.MatchString(compat) {
+		return store.Build{}, false, fmt.Errorf("%w：标签 %s 只能是 1 到 128 个字母、数字、点、横线或下划线", registry.ErrUnusable, LabelCompat)
+	}
+
+	err = s.store.Update(ctx, func(tx *store.Tx) error {
+		existing, err := tx.BuildByDigest(r.Repository, img.Digest)
+		if err == nil {
+			b = existing
+			return nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		b, err = tx.InsertBuild(store.Build{
+			Game: r.Repository, Digest: img.Digest, Tag: r.Tag, Compat: compat, Labels: img.Labels,
+			Port: img.Port, Protocol: img.Protocol, Note: strings.TrimSpace(r.Note), RegisteredBy: actor,
+		})
+		if err != nil {
+			return err
+		}
+		created = true
+		return tx.Audit(actor, "build.register", buildName(b), fmt.Sprintf("版本 %s，联机版本 %s，%s", b.Version(), b.Compat, b.Digest[:min(len(b.Digest), len("sha256:")+12)]))
+	})
+	return b, created, err
+}
+
+func buildName(b store.Build) string { return fmt.Sprintf("%s #%d", b.Game, b.ID) }
+
+// --- Deployments
+
+// DeployRequest asks for a build to run in a cluster.
+type DeployRequest struct {
+	BuildID     int64
+	Cluster     string
+	Buffer      int
+	MaxReplicas int
+	// Rooms is how many matches one game server runs at once.
+	Rooms     int
+	Resources store.Resources
+}
+
+// DefaultsFor returns the settings a new deployment of the game in the
+// cluster starts from.
+func (s *Service) DefaultsFor(ctx context.Context, game, clusterName string) (store.Deployment, error) {
+	var d store.Deployment
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		var err error
+		d, err = tx.LastDeployment(game, clusterName)
+		return err
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return Defaults, nil
+	}
+	return d, err
+}
+
+// Deploy starts the build in the cluster. The background loop creates the
+// Fleet within seconds.
+func (s *Service) Deploy(ctx context.Context, req DeployRequest, actor string) (store.Deployment, error) {
+	if _, ok := s.site(req.Cluster); !ok {
+		return store.Deployment{}, invalid("没有叫 %s 的集群", req.Cluster)
+	}
+	r := req.Resources
+	switch {
+	case req.Buffer < 1 || req.Buffer > 50:
+		return store.Deployment{}, invalid("空闲战斗服要在 1 到 50 个之间")
+	case req.MaxReplicas < req.Buffer || req.MaxReplicas > 500:
+		return store.Deployment{}, invalid("上限要不小于空闲数，最多 500")
+	case req.Rooms < 1 || req.Rooms > 1000:
+		return store.Deployment{}, invalid("每个战斗服的局数要在 1 到 1000 之间")
+	case r.CPURequest < 10 || r.CPULimit < r.CPURequest || r.CPULimit > 16000:
+		return store.Deployment{}, invalid("CPU 请求至少 10m，上限要在请求和 16000m 之间")
+	case r.MemoryRequest < 16 || r.MemoryLimit < r.MemoryRequest || r.MemoryLimit > 65536:
+		return store.Deployment{}, invalid("内存请求至少 16Mi，上限要在请求和 65536Mi 之间")
+	}
+	var d store.Deployment
+	err := s.store.Update(ctx, func(tx *store.Tx) error {
+		b, err := tx.Build(req.BuildID)
+		if err != nil {
+			return notFound(err, "构建")
+		}
+		routed, err := routedBuilds(tx)
+		if err != nil {
+			return err
+		}
+		state := store.StateNew
+		if routed[b.ID] {
+			state = store.StateServing
+		}
+		d, err = tx.InsertDeployment(store.Deployment{
+			BuildID: b.ID, Cluster: req.Cluster, Fleet: fmt.Sprintf("%s-%d", b.Game, b.ID),
+			Buffer: req.Buffer, MaxReplicas: req.MaxReplicas, Rooms: req.Rooms, Resources: r, State: state, CreatedBy: actor,
+		})
+		if errors.Is(err, store.ErrDuplicate) {
+			return conflict("%s 已经部署在 %s 了", buildName(b), req.Cluster)
+		}
+		if err != nil {
+			return err
+		}
+		return tx.Audit(actor, "deployment.create", d.Fleet+" @ "+d.Cluster,
+			fmt.Sprintf("%s，每个战斗服 %d 局，保持 %d 个空闲，最多 %d 个", buildName(b), d.Rooms, d.Buffer, d.MaxReplicas))
+	})
+	if err == nil {
+		s.Kick()
+	}
+	return d, err
+}
+
+// Undeploy deletes a deployment that no route uses, with its Fleet. It
+// refuses while matches still run on it; those end on their own.
+func (s *Service) Undeploy(ctx context.Context, id int64, actor string) error {
+	var d store.Deployment
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		var err error
+		d, err = tx.Deployment(id)
+		return notFound(err, "部署")
+	})
+	if err != nil {
+		return err
+	}
+	switch d.State {
+	case store.StateDeleted:
+		return nil
+	case store.StateServing:
+		return conflict("还有路由把对局分到这个构建，先改路由")
+	}
+	site, ok := s.site(d.Cluster)
+	if !ok {
+		return conflict("配置里已经没有集群 %s", d.Cluster)
+	}
+	fleets, err := site.Cluster.ManagedFleets(ctx)
+	if err != nil {
+		return err
+	}
+	for _, f := range fleets {
+		if f.Deployment == d.ID && f.Allocated+f.Reserved > 0 {
+			return conflict("%s 上还有 %d 局在打，打完才能删", d.Fleet, f.Allocated+f.Reserved)
+		}
+	}
+	if err := site.Cluster.DeleteAutoscaler(ctx, d.Fleet); err != nil {
+		return err
+	}
+	if err := site.Cluster.DeleteFleet(ctx, d.Fleet); err != nil {
+		return err
+	}
+	return s.store.Update(ctx, func(tx *store.Tx) error {
+		current, err := tx.Deployment(id)
+		if err != nil {
+			return err
+		}
+		if current.State == store.StateServing {
+			// A route moved to this build while the Fleet was being deleted;
+			// the loop recreates the Fleet.
+			return conflict("刚有路由指向了这个构建，没有删除")
+		}
+		if err := tx.SetDeploymentState(id, store.StateDeleted); err != nil {
+			return err
+		}
+		return tx.Audit(actor, "deployment.delete", d.Fleet+" @ "+d.Cluster, "")
+	})
+}
+
+// SetBuffer changes how many idle game servers a deployment keeps.
+func (s *Service) SetBuffer(ctx context.Context, id int64, buffer, maxReplicas int, actor string) error {
+	if buffer < 1 || buffer > 50 || maxReplicas < buffer || maxReplicas > 500 {
+		return invalid("空闲战斗服要在 1 到 50 个之间，上限不小于空闲数，最多 500")
+	}
+	err := s.store.Update(ctx, func(tx *store.Tx) error {
+		d, err := tx.Deployment(id)
+		if err != nil {
+			return notFound(err, "部署")
+		}
+		if d.State == store.StateDeleted {
+			return conflict("这个部署已经删除了")
+		}
+		if err := tx.SetDeploymentBuffer(id, buffer, maxReplicas); err != nil {
+			return err
+		}
+		return tx.Audit(actor, "deployment.buffer", d.Fleet+" @ "+d.Cluster,
+			fmt.Sprintf("保持 %d 个空闲，最多 %d 个（原来 %d、%d）", buffer, maxReplicas, d.Buffer, d.MaxReplicas))
+	})
+	if err == nil {
+		s.Kick()
+	}
+	return err
+}
+
+// --- Routes
+
+// SetRoute sends new matches of the build's game and compat version on the
+// channel to the build. The build must be deployed somewhere.
+func (s *Service) SetRoute(ctx context.Context, channel string, buildID int64, actor string) error {
+	return s.route(ctx, "route.set", channel, buildID, actor)
+}
+
+// Promote points stable at the build canary uses for the compat version.
+func (s *Service) Promote(ctx context.Context, game, compat, actor string) error {
+	var canary store.Route
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		var err error
+		canary, err = tx.Route(game, Canary, compat)
+		return notFound(err, "灰度路由")
+	})
+	if err != nil {
+		return err
+	}
+	return s.route(ctx, "route.promote", Stable, canary.BuildID, actor)
+}
+
+// Rollback points the route back at the build it used before.
+func (s *Service) Rollback(ctx context.Context, game, channel, compat, actor string) error {
+	var r store.Route
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		var err error
+		r, err = tx.Route(game, channel, compat)
+		return notFound(err, "路由")
+	})
+	if err != nil {
+		return err
+	}
+	if r.PreviousBuildID == 0 {
+		return conflict("这条路由之前没有指向过别的构建")
+	}
+	return s.route(ctx, "route.rollback", channel, r.PreviousBuildID, actor)
+}
+
+func (s *Service) route(ctx context.Context, action, channel string, buildID int64, actor string) error {
+	if channel != Stable && channel != Canary {
+		return invalid("通道只能是 %s 或 %s", Stable, Canary)
+	}
+	err := s.store.Update(ctx, func(tx *store.Tx) error {
+		b, err := tx.Build(buildID)
+		if err != nil {
+			return notFound(err, "构建")
+		}
+		live, err := liveDeploymentsOf(tx, b.ID)
+		if err != nil {
+			return err
+		}
+		if len(live) == 0 {
+			return conflict("%s 没有部署在任何集群，先部署", buildName(b))
+		}
+		r := store.Route{Game: b.Game, Channel: channel, Compat: b.Compat, BuildID: b.ID, UpdatedBy: actor}
+		old, err := tx.Route(b.Game, channel, b.Compat)
+		switch {
+		case err == nil && old.BuildID == b.ID:
+			return nil
+		case err == nil:
+			r.PreviousBuildID = old.BuildID
+		case !errors.Is(err, store.ErrNotFound):
+			return err
+		}
+		if err := tx.PutRoute(r); err != nil {
+			return err
+		}
+		detail := fmt.Sprintf("→ #%d", b.ID)
+		if r.PreviousBuildID != 0 {
+			detail = fmt.Sprintf("#%d → #%d", r.PreviousBuildID, b.ID)
+		}
+		if err := tx.Audit(actor, action, routeName(r.Game, channel, r.Compat), detail); err != nil {
+			return err
+		}
+		if err := endCanaryLikeStable(tx, b, actor); err != nil {
+			return err
+		}
+		return refreshStates(tx)
+	})
+	if err == nil {
+		s.Kick()
+	}
+	return err
+}
+
+// endCanaryLikeStable deletes the canary route of the build's compat version
+// when it points where stable does. Such a route is no canary, yet it would
+// keep testers matching only each other. So promoting a build ends its
+// canary, and testers play with everyone until the next one.
+func endCanaryLikeStable(tx *store.Tx, b store.Build, actor string) error {
+	stable, err := tx.Route(b.Game, Stable, b.Compat)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	canary, err := tx.Route(b.Game, Canary, b.Compat)
+	if errors.Is(err, store.ErrNotFound) || err == nil && canary.BuildID != stable.BuildID {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := tx.DeleteRoute(b.Game, Canary, b.Compat); err != nil {
+		return err
+	}
+	return tx.Audit(actor, "route.delete", routeName(b.Game, Canary, b.Compat), fmt.Sprintf("原来是 #%d，和正式一样，灰度结束", canary.BuildID))
+}
+
+// DeleteRoute stops sending matches on the channel and compat version
+// anywhere. Players on the canary channel go back to stable.
+func (s *Service) DeleteRoute(ctx context.Context, game, channel, compat, actor string) error {
+	err := s.store.Update(ctx, func(tx *store.Tx) error {
+		r, err := tx.Route(game, channel, compat)
+		if err != nil {
+			return notFound(err, "路由")
+		}
+		if err := tx.DeleteRoute(game, channel, compat); err != nil {
+			return err
+		}
+		if err := refreshStates(tx); err != nil {
+			return err
+		}
+		return tx.Audit(actor, "route.delete", routeName(game, channel, compat), fmt.Sprintf("原来是 #%d", r.BuildID))
+	})
+	if err == nil {
+		s.Kick()
+	}
+	return err
+}
+
+func routeName(game, channel, compat string) string { return game + " " + channel + " " + compat }
+
+// RouteView is a route as the game backend sees it: which compat versions
+// can play on which channel, in which regions.
+type RouteView struct {
+	Game    string   `json:"game"`
+	Channel string   `json:"channel"`
+	Compat  string   `json:"compat"`
+	Build   int64    `json:"build"`
+	Regions []string `json:"regions"`
+}
+
+// Routes lists the routes of one game, or of every game when game is empty.
+func (s *Service) Routes(ctx context.Context, game string) ([]RouteView, error) {
+	views := []RouteView{}
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		routes, err := tx.Routes(game)
+		if err != nil {
+			return err
+		}
+		deployments, err := tx.Deployments()
+		if err != nil {
+			return err
+		}
+		for _, r := range routes {
+			v := RouteView{Game: r.Game, Channel: r.Channel, Compat: r.Compat, Build: r.BuildID, Regions: []string{}}
+			for _, d := range deployments {
+				if site, ok := s.site(d.Cluster); ok && d.BuildID == r.BuildID && !slices.Contains(v.Regions, site.Region) {
+					v.Regions = append(v.Regions, site.Region)
+				}
+			}
+			slices.Sort(v.Regions)
+			views = append(views, v)
+		}
+		return nil
+	})
+	return views, err
+}
+
+// Target is where a match goes: a Fleet in a cluster.
+type Target struct {
+	Cluster string
+	Fleet   string
+	Build   int64
+}
+
+// Resolve finds the Fleet for a new match.
+func (s *Service) Resolve(ctx context.Context, game, channel, compat, region string) (Target, error) {
+	var t Target
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		r, err := tx.Route(game, channel, compat)
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrNoRoute
+		}
+		if err != nil {
+			return err
+		}
+		live, err := liveDeploymentsOf(tx, r.BuildID)
+		if err != nil {
+			return err
+		}
+		for _, d := range live {
+			if site, ok := s.site(d.Cluster); ok && site.Region == region {
+				t = Target{Cluster: d.Cluster, Fleet: d.Fleet, Build: d.BuildID}
+				return nil
+			}
+		}
+		return ErrNoRoute
+	})
+	return t, err
+}
+
+// --- State
+
+// routedBuilds returns the builds some route points at.
+func routedBuilds(tx *store.Tx) (map[int64]bool, error) {
+	routes, err := tx.Routes("")
+	if err != nil {
+		return nil, err
+	}
+	routed := map[int64]bool{}
+	for _, r := range routes {
+		routed[r.BuildID] = true
+	}
+	return routed, nil
+}
+
+func liveDeploymentsOf(tx *store.Tx, buildID int64) ([]store.Deployment, error) {
+	all, err := tx.Deployments()
+	if err != nil {
+		return nil, err
+	}
+	var live []store.Deployment
+	for _, d := range all {
+		if d.BuildID == buildID {
+			live = append(live, d)
+		}
+	}
+	return live, nil
+}
+
+// refreshStates moves deployments between serving and draining after the
+// routes changed: a routed build serves, a build that lost its last route drains.
+func refreshStates(tx *store.Tx) error {
+	routed, err := routedBuilds(tx)
+	if err != nil {
+		return err
+	}
+	deployments, err := tx.Deployments()
+	if err != nil {
+		return err
+	}
+	for _, d := range deployments {
+		next := d.State
+		switch {
+		case routed[d.BuildID]:
+			next = store.StateServing
+		case d.State == store.StateServing:
+			next = store.StateDraining
+		}
+		if next != d.State {
+			if err := tx.SetDeploymentState(d.ID, next); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func notFound(err error, what string) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return &Error{ErrNotFound, "没有这个" + what}
+	}
+	return err
+}
+
+func printable(s string, max int, empty bool) bool {
+	if s == "" {
+		return empty
+	}
+	return len(s) <= max && !strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) && r != '\n' })
+}
+
+// Record adds an entry to the audit log for something done elsewhere, such
+// as a GM ending a room.
+func (s *Service) Record(ctx context.Context, actor, action, target, detail string) error {
+	return s.store.Update(ctx, func(tx *store.Tx) error { return tx.Audit(actor, action, target, detail) })
+}
+
+// Retention is how long a drained deployment is kept for a quick rollback.
+func (s *Service) Retention() time.Duration { return s.retention }

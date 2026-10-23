@@ -1,0 +1,88 @@
+{{define "content"}}
+{{- $d := .Data}}
+{{- if not $d.Join}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/">总览</a><span>/</span><span>集群</span></div>
+    <h1>接入集群</h1>
+    <p class="subline">把一台新 VPS 装成一个新集群，服务一个新地区。同一地区要扩容，在那个集群的页面加机器。</p>
+  </div>
+</header>
+{{- if $d.Err}}<p class="error">{{$d.Err}}</p>{{end}}
+<div class="panel">
+  <div class="panel-head"><h2>新集群</h2></div>
+  <form class="form-grid narrow" action="/clusters/new" method="post">
+    <label>集群名<input name="name" value="{{$d.Form.Name}}" placeholder="例如 sg-1" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="63" required></label>
+    <label>地区<input name="region" value="{{$d.Form.Region}}" placeholder="例如 sg" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="63" required></label>
+    {{template "machineFields" $d.Form}}
+    <label class="span check"><input type="checkbox" name="controlPlaneOnly" value="1"{{if $d.Form.ControlPlaneOnly}} checked{{end}}>
+      <span>这台机器只做控制面，不跑战斗服<span class="muted">：战斗服跑在之后加的机器上。适合本身还跑着别的服务的机器，比如管理机</span></span></label>
+    <div class="span form-actions">
+      <button type="submit" class="primary" name="mode" value="ssh">开始安装</button>
+      <button type="submit" name="mode" value="manual" formnovalidate>只要命令，我自己执行</button>
+    </div>
+  </form>
+  <p class="hint">GameFleet 用这个密码或私钥登录那台机器，装好 K3s 和 Agones 后自己连上去。密码和私钥只留在内存里：接入完成或者一小时后就丢掉，不写进数据库和日志。地区要和玩家在客户端里选的一致。</p>
+</div>
+{{- else}}
+{{- $j := $d.Join}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/">总览</a><span>/</span><a href="/clusters/new">接入集群</a><span>/</span><span>{{$j.Name}}</span></div>
+    <h1>接入 {{$j.Name}}</h1>
+    <p class="subline">地区 {{$j.Region}}{{if $j.ControlPlaneOnly}} · 只做控制面{{end}}
+      {{- if $j.Remote}} · GameFleet 通过 SSH 在 <span class="mono">{{$j.Remote.User}}@{{$j.Remote.Host}}</span> 上安装{{else if $j.IP}} · 新机器 <span class="mono">{{$j.IP}}</span>{{end}}
+      {{- if and (ne $j.Stage "done") (not $d.Expired)}} · 加入码 {{until $j.Expires}}过期{{end}}</p>
+  </div>
+  {{- if .Refresh}}<span class="live-note">每 3 秒更新</span>{{end}}
+</header>
+{{- if eq $j.Stage "done"}}
+{{- if $j.ControlPlaneOnly}}
+<p class="finding ok"><span class="dot"></span><span class="text">{{$j.Name}} 已经接入。这台机器只做控制面，下一步：给 {{$j.Name}} 加一台跑战斗服的机器，再在构建页把要用的构建部署到 {{$j.Name}}。</span></p>
+<div class="actions"><a class="button primary" href="/clusters/{{$j.Name}}/nodes/new">加机器</a><a class="button" href="/clusters/{{$j.Name}}">打开 {{$j.Name}}</a></div>
+{{- else}}
+<p class="finding ok"><span class="dot"></span><span class="text">{{$j.Name}} 已经接入。下一步：在构建页把要用的构建部署到 {{$j.Name}}，再到路由页确认地区 {{$j.Region}} 出现在路由里。</span></p>
+<div class="actions"><a class="button primary" href="/clusters/{{$j.Name}}">打开 {{$j.Name}}</a><a class="button" href="/builds">去部署构建</a></div>
+{{- end}}
+{{- else if $d.Expired}}
+<p class="finding bad"><span class="dot"></span><span class="text">加入码已经过期，登录信息也丢掉了。回到接入集群页重新填一次；那台机器上已经装好的部分会接着用。</span></p>
+<div class="actions"><a class="button primary" href="/clusters/new">重新开始</a></div>
+{{- else if and $j.Remote (eq $j.Remote.State "failed")}}
+<p class="finding bad"><span class="dot"></span><span class="text">{{$j.Remote.Error}}</span></p>
+<form class="actions" action="/clusters/new/{{$j.ID}}/retry" method="post"><button type="submit" class="primary">重试</button><span class="muted">用刚才的登录信息再跑一次，已经装好的部分会接着用。</span></form>
+{{- else if $j.Message}}
+<p class="finding warn"><span class="dot"></span><span class="text">{{$j.Message}}</span></p>
+{{- end}}
+{{template "progress" $d.Progress}}
+{{- if $j.Remote}}
+{{template "remoteLog" $j.Remote}}
+{{- end}}
+<div class="panel">
+  <div class="panel-head"><h2>云防火墙要放行</h2><span class="muted">在云服务商的控制台里给这台机器加入站规则；还没放行的话，安装会停在“GameFleet 连接集群”，放行后自动接着走</span></div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>协议和端口</th><th>来源</th><th>做什么用</th></tr></thead>
+    <tbody>
+      {{- if $j.Remote}}<tr><td class="mono">TCP 22</td><td class="mono">{{if $d.GameFleet}}{{$d.GameFleet}}{{else}}GameFleet 所在机器的公网 IP{{end}}</td><td>GameFleet 登录这台机器安装。装完可以关掉</td></tr>{{end}}
+      <tr><td class="mono">TCP 6443</td><td class="mono">{{if $d.GameFleet}}{{$d.GameFleet}}{{else}}GameFleet 所在机器的公网 IP{{end}}</td><td>GameFleet 管理这个集群。只放行这一个来源</td></tr>
+      <tr><td class="mono">UDP 20000-20999</td><td>所有地址</td><td>玩家连接战斗服</td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+{{- if $j.Remote}}
+<details class="panel manual">
+  <summary>也可以自己在那台机器上用 root 执行</summary>
+  <div class="panel-body"><pre class="command"><code data-copy="{{$d.Command}}">{{$d.Command}}</code></pre></div>
+</details>
+{{- else}}
+<div class="panel">
+  <div class="panel-head"><h2>在新机器上用 root 执行</h2></div>
+  <div class="panel-body">
+    <pre class="command"><code data-copy="{{$d.Command}}">{{$d.Command}}</code></pre>
+    <p class="muted">要求：Debian 或 Ubuntu，x86_64，2 GB 内存以上。装 K3s 和 Agones 大约 3 到 5 分钟，进度显示在上面。脚本中途失败了可以再执行一次，会接着装。</p>
+  </div>
+</div>
+{{- end}}
+{{- end}}
+{{end}}

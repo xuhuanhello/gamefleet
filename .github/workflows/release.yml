@@ -1,0 +1,56 @@
+# A version tag, such as v2.1.0, publishes a release: the image on
+# ghcr.io/xuhuanhello/gamefleet and a GitHub release with the deploy files.
+# The tag's message becomes the release notes, so tag with -a:
+#   git tag -a v2.1.0 -m "说明……" && git push origin v2.1.0
+name: Release
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
+      - name: Version
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Stamp the install script with the version
+        run: |
+          sed -i "s/^VERSION=dev$/VERSION=${{ steps.v.outputs.version }}/" deploy/install.sh
+          grep -qx "VERSION=${{ steps.v.outputs.version }}" deploy/install.sh
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          tags: |
+            ghcr.io/xuhuanhello/gamefleet:${{ steps.v.outputs.version }}
+            ghcr.io/xuhuanhello/gamefleet:latest
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
+          tar -czf gamefleet-deploy.tar.gz -C deploy .
+          gh release create "$GITHUB_REF_NAME" --title "GameFleet $GITHUB_REF_NAME" --notes-file notes.md \
+            gamefleet-deploy.tar.gz deploy/install.sh

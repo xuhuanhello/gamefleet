@@ -1,0 +1,58 @@
+# GameFleet on the management machine: Caddy for HTTPS, GameFleet itself and
+# the image registry, all on one domain. See deploy/Caddyfile for the routing.
+#
+# Files next to this one on the host (never in git), written by install.sh:
+#   .env                     settings, see .env.example
+#   private/config.json      GameFleet configuration, see config.example.json
+#   credentials/             the console password and authenticator link
+#   update/                  requests to the updater and its progress
+#
+# GameFleet's database is in the volume gamefleet_data; updates from the
+# console back it up to backups/ there first. To back it up by hand, stop
+# GameFleet for a moment so the copy is consistent:
+#   docker compose stop gamefleet && docker compose cp gamefleet:/var/lib/gamefleet/. backup/ && docker compose start gamefleet
+name: gamefleet
+
+services:
+  caddy:
+    image: ${CADDY_IMAGE:?Set CADDY_IMAGE in .env}
+    restart: unless-stopped
+    environment:
+      GAMEFLEET_DOMAIN: ${GAMEFLEET_DOMAIN:?Set GAMEFLEET_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  gamefleet:
+    image: ${GAMEFLEET_IMAGE:?Set GAMEFLEET_IMAGE in .env}
+    restart: unless-stopped
+    environment:
+      # Shared with the updater (updater.sh); empty when there is none.
+      GAMEFLEET_UPDATE_DIR: ${GAMEFLEET_UPDATE_DIR:-}
+    volumes:
+      - ./private:/etc/gamefleet:ro
+      - ./update:/var/lib/gamefleet-update
+      - gamefleet_data:/var/lib/gamefleet
+
+  # The registry has no accounts of its own and no published port: only
+  # GameFleet reaches it, after checking the caller's API key.
+  registry:
+    image: ${REGISTRY_IMAGE:?Set REGISTRY_IMAGE in .env}
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_RELATIVEURLS: "true"
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registry_data:/var/lib/registry
+
+volumes:
+  caddy_data:
+  caddy_config:
+  gamefleet_data:
+  registry_data:

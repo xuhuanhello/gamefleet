@@ -1,0 +1,94 @@
+{{define "content"}}
+{{- $c := .Data.Cluster}}
+{{- $n := .Data.Node}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/clusters/{{$c}}">{{$c}}</a><span>/</span><span>机器</span></div>
+    <h1>{{$n.Title}} {{template "nodeState" $n}}</h1>
+    <p class="subline">{{if $n.Given}}节点名 <span class="mono">{{$n.Name}}</span> · {{end}}{{if $n.Roles}}{{join $n.Roles ", "}}{{else}}worker{{end}} · 内网 <span class="mono">{{$n.InternalIP}}</span>{{if $n.ExternalIP}} · 公网 <span class="mono">{{$n.ExternalIP}}</span>{{end}}</p>
+  </div>
+  <div class="head-side">
+    {{template "live"}}
+    {{- if and (not .Data.ControlPlane) $n.Retiring.IsZero}}
+    <form action="/clusters/{{$c}}/nodes/{{$n.Name}}/retire" method="post"
+      data-confirm="下线 {{$n.Title}}？GameFleet 会删掉它上面的空闲战斗服，等正在打的对局结束后把它从集群里删掉。">
+      <button type="submit">下线这台机器</button>
+    </form>
+    {{- end}}
+  </div>
+</header>
+{{template "errors" .Data.Errs}}
+{{- if not $n.Retiring.IsZero}}
+<p class="finding warn"><span class="dot"></span><span class="text">
+  {{- if .Data.Allocated}}正在下线：{{age $n.Retiring}}前开始，不再分配新的战斗服。还有 {{.Data.Allocated}} 局在打，打完后 GameFleet 把它从集群里删掉。
+  {{- else}}正在下线：没有对局了，GameFleet 马上把它从集群里删掉。{{end}}</span></p>
+<div class="notice">
+  <p>删掉以后，在那台机器上执行 <span class="mono">k3s-agent-uninstall.sh</span>，或者直接重装系统、退掉机器。</p>
+  <form action="/clusters/{{$c}}/nodes/{{$n.Name}}/keep" method="post"><button type="submit">取消下线</button></form>
+</div>
+{{- end}}
+<div class="kpis">
+  <div class="kpi"><div class="label">CPU 使用（核）</div>{{template "kpiGauge" .Data.CPU}}</div>
+  <div class="kpi"><div class="label">内存使用</div>{{template "kpiGauge" .Data.Memory}}</div>
+  <div class="kpi"><div class="label">进行中的对局</div><div class="figure">{{.Data.Allocated}}</div><div class="sub">还能再开 {{.Data.Ready}} 局</div></div>
+  <div class="kpi"><div class="label">Pod 的请求</div><div class="figure">{{memory .Data.Requests.Memory}}<span class="of"> / {{memory $n.Allocatable.Memory}}</span></div><div class="sub">CPU {{cpu .Data.Requests.MilliCPU}} / {{cpu $n.Allocatable.MilliCPU}} 核</div></div>
+</div>
+<section class="section">
+  <h2>战斗服 <span class="muted">{{len .Data.Servers}} 个</span></h2>
+  <div class="panel">
+    <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>战斗服</th><th>状态</th><th>对局</th>
+        <th>运行</th><th class="num">重启</th><th class="num">CPU（核）</th><th class="num">内存</th><th></th>
+      </tr></thead>
+      <tbody>
+      {{- range .Data.Servers}}
+        <tr>
+          <td class="two">
+            {{if .Room}}<a class="name mono" href="/clusters/{{$c}}/servers/{{.Name}}">{{.Name}}</a>{{else}}<span class="mono">{{.Name}}</span>{{end}}
+            <div class="sub">{{if .Room}}{{if .Room.Build}}构建 #{{.Room.Build}}{{else}}{{.Room.Fleet}}{{end}}{{else}}{{.Namespace}}{{end}}</div>
+          </td>
+          <td>{{if .Room}}{{template "state" (shown .Room)}}{{else}}{{template "state" .Status}}{{end}}</td>
+          <td>{{if .Room}}{{len .Room.Matches}}<span class="muted"> / {{.Room.Capacity}} 局</span>{{else}}<span class="muted">–</span>{{end}}</td>
+          <td>{{age .Created}}</td>
+          <td class="num">{{.Restarts}}</td>
+          <td class="num">{{.CPU}}</td>
+          <td class="num">{{.Memory}}</td>
+          <td class="num"><a class="link" href="/clusters/{{$c}}/pods/{{.Namespace}}/{{.Name}}/log">日志</a></td>
+        </tr>
+      {{- else}}
+        <tr><td colspan="8" class="empty">这台机器上没有战斗服。</td></tr>
+      {{- end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+<section class="section">
+  <h2>系统组件</h2>
+  <div class="panel">{{template "components" .Data.Components}}</div>
+</section>
+<section class="section">
+  <h2>机器信息</h2>
+  <div class="panel">
+    <form class="inline rename" action="/clusters/{{$c}}/nodes/{{$n.Name}}/name" method="post">
+      <label>名称 <input name="title" value="{{$n.Given}}" placeholder="{{$n.Name}}" maxlength="40" aria-label="机器名称"></label>
+      <button type="submit">保存</button>
+      <span class="muted">只在控制台里显示，K8s 里的节点名 <span class="mono">{{$n.Name}}</span> 不变。留空就显示节点名。</span>
+    </form>
+    <dl class="facts">
+      <div><dt>K3s</dt><dd>{{$n.Kubelet}}</dd></div>
+      <div><dt>系统</dt><dd>{{$n.OS}}</dd></div>
+      <div><dt>加入集群</dt><dd>{{age $n.Created}}前</dd></div>
+      <div><dt>总量</dt><dd>{{if $n.Capacity.Memory}}{{cpu $n.Capacity.MilliCPU}} 核 · {{memory $n.Capacity.Memory}}{{else}}–{{end}}</dd></div>
+      <div><dt>留给 Pod</dt><dd>{{cpu $n.Allocatable.MilliCPU}} 核 · {{memory $n.Allocatable.Memory}}</dd></div>
+      <div class="wide"><dt>污点</dt><dd class="mono">{{if $n.Taints}}{{join $n.Taints ", "}}{{else}}–{{end}}</dd></div>
+    </dl>
+  </div>
+</section>
+<section class="section">
+  <h2>事件</h2>
+  <div class="panel">{{template "events" .Data.Events}}</div>
+</section>
+{{end}}

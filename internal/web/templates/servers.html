@@ -1,0 +1,55 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <h1>战斗服</h1>
+    <p class="subline">{{.Data.Allocated}} 局在打，还能再开 {{.Data.Ready}} 局。每个战斗服是一个进程，同时跑多局，最多几局在部署时设定。</p>
+  </div>
+  {{template "live"}}
+</header>
+<form class="search-big" action="/servers" method="get" role="search">
+  <input type="search" name="q" value="{{.Query}}" placeholder="matchId 或战斗服名，填开头几位就行" aria-label="matchId 或战斗服名">
+  <button type="submit" class="primary">查找</button>
+  {{- if .Query}}<a class="button" href="/servers">看全部</a>{{end}}
+</form>
+<div class="filters">
+  <nav class="seg" aria-label="状态">
+    {{- range .Data.States}}
+    {{if .Active}}<strong>{{.Label}} <span class="count">{{.Count}}</span></strong>{{else}}<a href="{{.URL}}">{{.Label}} <span class="count">{{.Count}}</span></a>{{end}}
+    {{- end}}
+  </nav>
+  <nav class="seg" aria-label="集群">
+    {{- range .Data.Clusters}}
+    {{if .Active}}<strong>{{.Label}}</strong>{{else}}<a href="{{.URL}}">{{.Label}}</a>{{end}}
+    {{- end}}
+  </nav>
+</div>
+{{template "errors" .Data.Errs}}
+<div class="panel">
+  <div class="panel-head">
+    <h2>{{if .Query}}查找“{{.Query}}”{{else}}战斗服{{end}}</h2><span class="muted">{{len .Data.Rows}} 个</span>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr>
+      <th>战斗服</th><th>状态</th><th>对局</th><th>机器</th><th>构建</th><th>最近开局</th>
+    </tr></thead>
+    <tbody>
+    {{- range .Data.Rows}}
+      <tr>
+        <td class="two"><a class="name mono" href="/clusters/{{.Cluster}}/servers/{{.ID}}">{{.ID}}</a><div class="sub">{{.Cluster}} · <span class="mono">{{.Address}}:{{.Port}}</span></div></td>
+        <td>{{template "state" (shown .Room)}}</td>
+        <td>{{if .Found}}<span class="mono" data-copy="{{.Found}}">{{.Found}}</span><div class="sub">共 {{len .Matches}} 局</div>{{else}}{{len .Matches}}<span class="muted"> / {{.Capacity}} 局</span>{{end}}</td>
+        <td>{{if .Node}}<a class="name" href="/clusters/{{.Cluster}}/nodes/{{.Node}}">{{or .Machine .Node}}</a>{{else}}<span class="muted">–</span>{{end}}</td>
+        <td>{{if .Build}}<a class="name" href="/builds/{{.Build}}">#{{.Build}}</a>{{else}}<strong>{{tag .Image}}</strong>{{end}}</td>
+        <td>{{with newest .Room}}{{if .IsZero}}<span class="muted">–</span>{{else}}{{age .}}前{{end}}{{end}}</td>
+      </tr>
+    {{- else}}
+      <tr><td colspan="6" class="empty">
+        {{- if .Query}}没有找到。对局结束后，它就从战斗服上去掉了，已结束的对局请到 Nakama 查结果。{{else}}没有符合条件的战斗服。{{end -}}
+      </td></tr>
+    {{- end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+{{end}}

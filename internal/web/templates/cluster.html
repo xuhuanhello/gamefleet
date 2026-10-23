@@ -1,0 +1,62 @@
+{{define "content"}}
+{{- $c := .Data.Name}}
+<header class="head">
+  <div>
+    <div class="crumbs"><span>集群</span></div>
+    <h1>{{$c}}</h1>
+    <p class="subline">地区 {{.Data.Region}} · {{len .Data.Nodes}} 台机器{{if .Data.Kubelet}} · K3s {{.Data.Kubelet}}{{end}}</p>
+  </div>
+  <div class="head-side">
+    {{template "live"}}
+    <a class="button" href="/clusters/{{$c}}/nodes/new">{{template "icon-plus"}}加机器</a>
+  </div>
+</header>
+{{template "errors" .Data.Errs}}
+{{- if .Data.Stuck}}
+<p class="finding bad"><span class="dot"></span><span class="text">系统组件没有就绪：{{join .Data.Stuck "、"}}。集群可能开不了局，原因看下面的系统组件和警告。</span></p>
+{{- end}}
+<section class="section">
+  <h2>机器</h2>
+  <div class="panel">
+    <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>机器</th><th>状态</th><th>角色</th><th>CPU（核）</th><th>内存</th>
+        <th class="num">对局</th><th class="num">还能开</th>
+      </tr></thead>
+      <tbody>
+      {{- range .Data.Nodes}}
+        <tr>
+          <td class="two">
+            <a class="name" href="/clusters/{{$c}}/nodes/{{.Name}}">{{.Title}}</a>
+            <div class="sub mono">{{if .Given}}{{.Name}} · {{end}}{{.InternalIP}}{{if .ExternalIP}} · {{.ExternalIP}}{{end}}</div>
+          </td>
+          <td>{{template "nodeState" .Node}}</td>
+          <td>{{if .Roles}}{{join .Roles ", "}}{{else}}worker{{end}}</td>
+          <td>{{template "pair" .CPU}}</td>
+          <td>{{template "pair" .Memory}}</td>
+          <td class="num">{{.Allocated}}</td>
+          <td class="num">{{.Ready}}</td>
+        </tr>
+      {{- else}}
+        <tr><td colspan="7" class="empty">集群里没有机器。</td></tr>
+      {{- end}}
+      </tbody>
+    </table>
+    </div>
+    <p class="hint">机器名下面是内网和公网 IP；改过名的机器还会写出 K8s 里的节点名。“使用”是整台机器的实际用量，包括 K3s 和系统本身，对比机器的总量；“请求”是 Pod 声明要占用的量，对比留给 Pod 的量。K8s 按请求放战斗服，请求占满后新的战斗服就放不上去。</p>
+  </div>
+</section>
+<section class="section">
+  <h2>战斗服版本<a class="more" href="/servers?cluster={{$c}}">全部战斗服 →</a></h2>
+  <div class="panel">{{template "fleets" .Data.Fleets}}</div>
+</section>
+<section class="section">
+  <h2>系统组件 <span class="muted">K3s 和 Agones 在集群里跑的程序</span></h2>
+  <div class="panel">{{template "components" .Data.Components}}</div>
+</section>
+<section class="section">
+  <h2>最近的警告<a class="more" href="/clusters/{{$c}}/events">全部事件 →</a></h2>
+  <div class="panel">{{template "events" .Data.Warnings}}</div>
+</section>
+{{end}}

@@ -1,0 +1,40 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <h1>构建</h1>
+    <p class="subline">CI 推上来的每个镜像登记成一个构建，编号由 GameFleet 分配。共 {{.Data.Total}} 个。</p>
+  </div>
+</header>
+<form class="search-big" action="/builds" method="get" role="search">
+  <input type="search" name="q" value="{{.Query}}" placeholder="编号、版本、联机版本、源码或任意标签" aria-label="筛选构建">
+  <button type="submit" class="primary">筛选</button>
+  {{- if .Query}}<a class="button" href="/builds">看全部</a>{{end}}
+</form>
+<div class="panel">
+  <div class="panel-head">
+    <h2>{{if .Query}}筛选“{{.Query}}”{{else}}全部构建{{end}}</h2><span class="muted">{{len .Data.Rows}} 个</span>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>构建</th><th>游戏</th><th>联机版本</th><th>源码</th><th>部署</th><th>路由</th><th>登记</th></tr></thead>
+    <tbody>
+    {{- range .Data.Rows}}
+      <tr>
+        <td class="two"><a class="name" href="/builds/{{.ID}}">#{{.ID}}</a><div class="sub">版本 {{.Version}}</div></td>
+        <td>{{.Game}}</td>
+        <td class="mono">{{.Compat}}</td>
+        <td class="mono">{{revision .Build}}</td>
+        <td>{{range .Deployed}}<span class="chip">{{.Cluster}} {{template "deployState" .State}}</span>{{else}}<span class="muted">–</span>{{end}}</td>
+        <td>{{if .Channels}}{{template "channels" .Channels}}{{else}}<span class="muted">–</span>{{end}}</td>
+        <td class="two">{{age .Registered}}前<div class="sub">{{.RegisteredBy}}</div></td>
+      </tr>
+    {{- else}}
+      <tr><td colspan="7" class="empty">
+        {{- if .Query}}没有匹配的构建。{{else}}还没有构建。CI 推镜像以后调用 POST /api/v1/builds 登记。{{end -}}
+      </td></tr>
+    {{- end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+{{end}}

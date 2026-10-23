@@ -1,0 +1,16 @@
+{
+  "listen": "127.0.0.1:8080",
+  "database": "/var/lib/gamefleet/gamefleet.db",
+  "registry": {
+    "url": "http://registry:5000",
+    "host": "fleet.example.com"
+  },
+  "drainRetention": "24h",
+  "users": [
+    {
+      "name": "admin",
+      "passwordHash": "pbkdf2-sha256$600000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "totpSecret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  ]
+}

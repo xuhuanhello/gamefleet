@@ -1,0 +1,58 @@
+{{define "layout"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · GameFleet</title>
+<link rel="stylesheet" href="/console.css">
+<script src="/console.js" defer></script>
+</head>
+{{- if .User}}
+<body class="app">
+<aside class="side">
+  <a class="brand" href="/"><span class="mark"></span>GameFleet</a>
+  <form class="find" action="/servers" method="get" role="search">
+    {{template "icon-search"}}
+    <input type="search" name="q" value="{{.Query}}" placeholder="查找 matchId 或战斗服" aria-label="查找 matchId 或战斗服">
+  </form>
+  <nav>
+    <a href="/" class="{{if eq .Nav "overview"}}active{{end}}">{{template "icon-overview"}}总览</a>
+    <a href="/servers" class="{{if eq .Nav "servers"}}active{{end}}">{{template "icon-servers"}}战斗服</a>
+    <div class="group">发布</div>
+    <a href="/builds" class="{{if eq .Nav "builds"}}active{{end}}">{{template "icon-builds"}}构建</a>
+    <a href="/routes" class="{{if eq .Nav "routes"}}active{{end}}">{{template "icon-routes"}}路由</a>
+    <div class="group">集群</div>
+    {{- range .Clusters}}
+    <a href="/clusters/{{.}}" class="{{if eq $.Nav (printf "cluster:%s" .)}}active{{end}}">{{template "icon-cluster"}}{{.}}</a>
+    {{- if eq $.Cluster .}}{{range $.Machines}}
+    <a href="/clusters/{{$.Cluster}}/nodes/{{.Name}}" class="leaf{{if eq $.Nav (printf "node:%s" .Name)}} active{{end}}" title="{{.Name}}"><span>{{.Title}}</span></a>
+    {{- end}}{{end}}
+    {{- end}}
+    <a href="/clusters/new" class="{{if eq .Nav "newcluster"}}active{{end}}">{{template "icon-plus"}}接入集群</a>
+    <div class="group">管理</div>
+    <a href="/settings/keys" class="{{if eq .Nav "settings"}}active{{end}}">{{template "icon-settings"}}设置</a>
+  </nav>
+  <div class="release">
+    {{- if .Update}}<a class="update" href="/settings/update">新版本 v{{.Update.Version}}<span>查看并更新 →</span></a>{{end}}
+    <a class="version" href="/settings/update">GameFleet {{if eq .Version "dev"}}dev{{else}}v{{.Version}}{{end}}</a>
+  </div>
+  <form class="who" action="/logout" method="post">
+    <span class="name"><span class="avatar">{{initial .User}}</span>{{.User}}</span>
+    <button type="submit" class="quiet">退出</button>
+  </form>
+</aside>
+<main class="canvas"{{if .Refresh}} data-refresh="{{if .RefreshSeconds}}{{.RefreshSeconds}}{{else}}10{{end}}"{{end}}>
+<div class="page">
+{{template "content" .}}
+</div>
+</main>
+</body>
+{{- else}}
+<body class="bare">
+<main>
+{{template "content" .}}
+</main>
+</body>
+{{- end}}
+</html>
+{{end}}

@@ -1,0 +1,21 @@
+{{define "content"}}
+{{- $d := .Data}}
+{{- $j := $d.Job}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/clusters/{{$d.Cluster}}">{{$d.Cluster}}</a><span>/</span><a href="/clusters/{{$d.Cluster}}/nodes/new">加机器</a></div>
+    <h1>加机器 {{$j.Remote.Host}}</h1>
+    <p class="subline">GameFleet 通过 SSH 在 <span class="mono">{{$j.Remote.User}}@{{$j.Remote.Host}}</span> 上安装 K3s，把它加入 {{$d.Cluster}}</p>
+  </div>
+  {{- if .Refresh}}<span class="live-note">每 3 秒更新</span>{{end}}
+</header>
+{{- if eq $j.Stage "done"}}
+<p class="finding ok"><span class="dot"></span><span class="text">{{$j.Node}} 已经加入 {{$d.Cluster}}，Agones 会马上在上面开战斗服。</span></p>
+<div class="actions"><a class="button primary" href="/clusters/{{$d.Cluster}}/nodes/{{$j.Node}}">打开 {{$j.Node}}</a><a class="button" href="/clusters/{{$d.Cluster}}">回到 {{$d.Cluster}}</a></div>
+{{- else if eq $j.Stage "failed"}}
+<p class="finding bad"><span class="dot"></span><span class="text">{{$j.Message}}</span></p>
+<form class="actions" action="/clusters/{{$d.Cluster}}/nodes/new/{{$j.ID}}/retry" method="post"><button type="submit" class="primary">重试</button><span class="muted">用刚才的登录信息再跑一次。</span></form>
+{{- end}}
+{{template "progress" $d.Progress}}
+{{template "remoteLog" $j.Remote}}
+{{end}}

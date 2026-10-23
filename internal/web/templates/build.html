@@ -1,0 +1,158 @@
+{{define "content"}}
+{{- $b := .Data.Build}}
+<header class="head">
+  <div>
+    <nav class="crumbs"><a href="/builds">构建</a><span>/</span><span>#{{$b.ID}}</span></nav>
+    <h1>{{$b.Game}} #{{$b.ID}}{{template "channels" .Data.Channels}}</h1>
+    <p class="subline">版本 {{$b.Version}} · 联机版本 <span class="mono">{{$b.Compat}}</span> · {{age $b.Registered}}前由 {{$b.RegisteredBy}} 登记</p>
+  </div>
+  {{- if .Refresh}}{{template "live"}}{{end}}
+</header>
+{{template "errors" .Data.Errs}}
+<p class="finding {{.Data.Finding.Level}}"><span class="dot"></span><span class="text">{{.Data.Finding.Text}}</span></p>
+
+<section class="section">
+  <h2>部署</h2>
+  <div class="panel">
+    <div class="scroll">
+    <table>
+      <thead><tr><th>集群</th><th>状态</th><th class="num">对局</th><th class="num">还能开</th><th>保持空闲战斗服</th><th>资源</th><th></th></tr></thead>
+      <tbody>
+      {{- range .Data.Deployments}}
+        <tr>
+          <td class="two"><a class="name" href="/clusters/{{.Cluster}}">{{.Cluster}}</a><div class="sub mono">{{.Deployment.Fleet}}</div></td>
+          <td class="two">{{template "deployState" .State}}
+            <div class="sub">
+            {{- if eq .State "draining"}}
+              {{- if gt .Playing 0}}等 {{.Playing}} 局打完再回收{{else}}{{until .ReclaimAt}}回收{{end}}
+            {{- else}}{{age .Since}}前{{end -}}
+            </div>
+          </td>
+          <td class="num">{{if .Live}}{{.Playing}}{{else}}<span class="muted">–</span>{{end}}</td>
+          <td class="num">{{if .Live}}{{.Free}}{{else}}<span class="muted">–</span>{{end}}</td>
+          <td>
+          {{- if eq .State "draining"}}<span class="muted">不再保持</span>
+          {{- else}}
+            <form class="inline" action="/deployments/{{.ID}}/buffer" method="post">
+              <input type="hidden" name="back" value="/builds/{{.BuildID}}">
+              <label>空闲 <input type="number" name="buffer" value="{{.Buffer}}" min="1" max="50" required></label>
+              <label>上限 <input type="number" name="max" value="{{.MaxReplicas}}" min="1" max="500" required></label>
+              <button type="submit" class="quiet">保存</button>
+            </form>
+          {{- end}}
+          </td>
+          <td class="two">每个战斗服 {{.Rooms}} 局<div class="sub">CPU {{.Resources.CPURequest}}–{{.Resources.CPULimit}}m · 内存 {{.Resources.MemoryRequest}}–{{.Resources.MemoryLimit}} MiB</div></td>
+          <td class="num">
+          {{- if and (ne .State "serving") (eq .Playing 0)}}
+            <form action="/deployments/{{.ID}}/delete" method="post" data-confirm="删除 {{.Cluster}} 上的 {{.Deployment.Fleet}}？它的空闲战斗服会一起删掉。">
+              <input type="hidden" name="back" value="/builds/{{.BuildID}}">
+              <button type="submit" class="quiet">删除</button>
+            </form>
+          {{- end}}
+          </td>
+        </tr>
+      {{- else}}
+        <tr><td colspan="7" class="empty">还没有部署在任何集群。</td></tr>
+      {{- end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  <div class="{{if .Data.Clusters}}grid{{else}}stack{{end}}">
+    {{- if .Data.Clusters}}
+    <div class="panel">
+      <div class="panel-head"><h2>部署到集群</h2></div>
+      <form class="form-grid" action="/builds/{{$b.ID}}/deploy" method="post">
+        <label class="span">集群
+          <select name="cluster">{{range .Data.Clusters}}<option>{{.}}</option>{{end}}</select>
+        </label>
+        <label>每个战斗服最多几局<input type="number" name="rooms" value="{{.Data.Form.Rooms}}" min="1" max="1000" required></label>
+        <label>保持空闲战斗服<input type="number" name="buffer" value="{{.Data.Form.Buffer}}" min="1" max="50" required></label>
+        <label>最多几个战斗服<input type="number" name="max" value="{{.Data.Form.MaxReplicas}}" min="1" max="500" required></label>
+        <label>CPU 请求（m）<input type="number" name="cpuRequest" value="{{.Data.Form.Resources.CPURequest}}" min="10" required></label>
+        <label>CPU 上限（m）<input type="number" name="cpuLimit" value="{{.Data.Form.Resources.CPULimit}}" min="10" required></label>
+        <label>内存请求（MiB）<input type="number" name="memoryRequest" value="{{.Data.Form.Resources.MemoryRequest}}" min="16" required></label>
+        <label>内存上限（MiB）<input type="number" name="memoryLimit" value="{{.Data.Form.Resources.MemoryLimit}}" min="16" required></label>
+        <div class="span form-actions">
+          <button type="submit" class="{{if not .Data.Deployments}}primary{{end}}">部署</button>
+          <span class="muted">部署后一直保持这么多空闲战斗服；有路由指向它才会有对局进来。</span>
+        </div>
+      </form>
+    </div>
+    {{- end}}
+    <div class="panel">
+      <div class="panel-head"><h2>路由</h2><a class="more" href="/routes">全部路由 →</a></div>
+      <div class="panel-body">
+      {{- if .Data.Routable}}
+        <p class="muted">联机版本 <span class="mono">{{$b.Compat}}</span> 的新对局：</p>
+        <div class="actions">
+          {{- if not (or (has .Data.Channels "canary") (has .Data.Channels "stable"))}}
+          <form action="/routes/set" method="post" data-confirm="把灰度通道指向 #{{$b.ID}}？测试账号的新对局会进这个构建。">
+            <input type="hidden" name="channel" value="canary"><input type="hidden" name="build" value="{{$b.ID}}">
+            <input type="hidden" name="back" value="/builds/{{$b.ID}}">
+            <button type="submit">设为灰度</button>
+          </form>
+          {{- end}}
+          {{- if not (has .Data.Channels "stable")}}
+          <form action="/routes/set" method="post" data-confirm="把正式通道指向 #{{$b.ID}}？所有普通玩家的新对局都会进这个构建。">
+            <input type="hidden" name="channel" value="stable"><input type="hidden" name="build" value="{{$b.ID}}">
+            <input type="hidden" name="back" value="/builds/{{$b.ID}}">
+            <button type="submit">设为正式</button>
+          </form>
+          {{- end}}
+        </div>
+
+      {{- else}}
+        <p class="muted">部署到至少一个集群以后，才能把路由指向它。</p>
+      {{- end}}
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <h2>详情</h2>
+  <div class="panel">
+    <dl class="facts">
+      <div><dt>版本</dt><dd>{{$b.Version}}</dd></div>
+      <div><dt>tag</dt><dd class="mono">{{or $b.Tag "–"}}</dd></div>
+      <div><dt>联机版本</dt><dd class="mono">{{$b.Compat}}</dd></div>
+      <div><dt>端口</dt><dd>{{$b.Port}}/{{$b.Protocol}}</dd></div>
+      <div class="wide"><dt>源码</dt><dd><span class="mono" data-copy="{{index $b.Labels "org.opencontainers.image.revision"}}">{{index $b.Labels "org.opencontainers.image.revision"}}</span></dd></div>
+      <div class="wide"><dt>digest</dt><dd><span class="mono" data-copy="{{$b.Digest}}">{{$b.Digest}}</span></dd></div>
+      <div class="wide"><dt>备注</dt><dd>{{or $b.Note "–"}}</dd></div>
+    </dl>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>镜像标签</h2><span class="muted">{{len .Data.Labels}} 个</span></div>
+    <table>
+      <tbody>
+      {{- range .Data.Labels}}
+        <tr><td class="mono muted">{{.Key}}</td><td class="mono wrap">{{.Value}}</td></tr>
+      {{- end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{{- if .Data.History}}
+<section class="section">
+  <h2>删除过的部署</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>集群</th><th>Fleet</th><th>部署</th><th>删除</th></tr></thead>
+      <tbody>
+      {{- range .Data.History}}
+        <tr>
+          <td>{{.Cluster}}</td>
+          <td class="mono">{{.Deployment.Fleet}}</td>
+          <td class="two">{{age .Created}}前<div class="sub">{{.CreatedBy}}</div></td>
+          <td>{{age .Since}}前</td>
+        </tr>
+      {{- end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{- end}}
+{{end}}

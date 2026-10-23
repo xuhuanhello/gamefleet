@@ -1,0 +1,67 @@
+{{define "content"}}
+{{- $d := .Data}}
+<header class="head">
+  <div>
+    <h1>设置</h1>
+    <p class="subline">机器调用 GameFleet 用的 API key、战斗服的运行时配置、谁在什么时候改过什么，以及 GameFleet 自己的更新。</p>
+  </div>
+</header>
+<div class="toolbar">{{template "settingsTabs" "update"}}</div>
+{{template "errors" $d.Errs}}
+<div class="panel">
+  <dl class="facts">
+    <div><dt>正在运行</dt><dd>{{if $d.Released}}GameFleet v{{$d.Current}}{{else}}GameFleet {{$d.Current}}（从源码编译）{{end}}</dd></div>
+    <div><dt>最新发布</dt><dd>{{with $d.Latest}}<a class="link" href="{{.URL}}" target="_blank" rel="noopener">v{{.Version}}</a>{{if not .Published.IsZero}} <span class="muted">{{age .Published}}前</span>{{end}}{{else}}–{{end}}</dd></div>
+  </dl>
+</div>
+{{- with $d.Status}}
+{{- if eq .State "failed"}}
+<p class="finding bad"><span class="dot"></span><span class="text">{{if eq .Action "apply"}}更新到{{else}}下载{{end}} v{{.Version}} 没有成功：{{.Error}}</span></p>
+{{- else if and (eq .State "applied") (eq .Version $d.Current)}}
+<p class="finding ok"><span class="dot"></span><span class="text">已经更新到 v{{.Version}}。</span></p>
+{{- end}}
+{{- end}}
+{{- if not $d.Released}}
+<p class="finding warn"><span class="dot"></span><span class="text">从源码编译的 GameFleet 没有版本号，不检查更新。</span></p>
+{{- else if $d.CheckErr}}
+<p class="finding warn"><span class="dot"></span><span class="text">问不到 GitHub 上的最新版本：{{$d.CheckErr}}。过一会儿刷新这个页面再试。</span></p>
+{{- else if and $d.Latest (not $d.Newer)}}
+<p class="finding ok"><span class="dot"></span><span class="text">已经是最新版本。</span></p>
+{{- end}}
+{{- if $d.Newer}}
+{{- $v := $d.Latest.Version}}
+<section class="section">
+  <h2>{{or $d.Latest.Name (printf "v%s" $v)}}</h2>
+  <div class="panel panel-body">
+    {{- if $d.Latest.Notes}}<pre class="notes">{{$d.Latest.Notes}}</pre>{{end}}
+    <p><a class="link" href="{{$d.Latest.URL}}" target="_blank" rel="noopener">在 GitHub 上看完整的更新说明 →</a></p>
+  </div>
+</section>
+<section class="section">
+  <h2>更新到 v{{$v}}</h2>
+  <div class="panel panel-body">
+  {{- if not $d.HasUpdater}}
+    <p>这台 GameFleet 没有装更新器，不能在控制台里更新。用新版本的安装脚本升级，见文档。</p>
+  {{- else if eq $d.Status.State "downloading"}}
+    <p>正在下载 v{{$d.Status.Version}}：{{$d.Status.Percent}}%</p>
+    <progress class="bar" max="100" value="{{$d.Status.Percent}}">{{$d.Status.Percent}}%</progress>
+  {{- else if eq $d.Status.State "applying"}}
+    <p>正在更新到 v{{$d.Status.Version}}，GameFleet 会重启十几秒。好了以后这个页面会跳到登录页，重新登录即可。</p>
+  {{- else if $d.Ready}}
+    <p>v{{$v}} 已经下载好了。重启时 GameFleet 停十几秒：新的匹配这期间分配不到战斗服，正在打的对局不受影响，所有人都要重新登录控制台。</p>
+    <form action="/settings/update/apply" method="post" data-confirm="现在更新到 v{{$v}}？GameFleet 会重启十几秒，之后要重新登录。">
+      <input type="hidden" name="version" value="{{$v}}">
+      <button type="submit" class="primary">重启并更新</button>
+    </form>
+  {{- else}}
+    <p>先把新版本的镜像下载到管理机上，这不影响正在运行的 GameFleet；下载完再决定什么时候重启。</p>
+    <form action="/settings/update/download" method="post">
+      <input type="hidden" name="version" value="{{$v}}">
+      <button type="submit" class="primary">下载 v{{$v}}</button>
+    </form>
+  {{- end}}
+    <p class="hint">更新前会先备份数据库，保留最近 5 份；新版本没有启动起来时，会自动回到现在的版本。更新说明里提到要改集群上的设置时，记得照着做。</p>
+  </div>
+</section>
+{{- end}}
+{{end}}

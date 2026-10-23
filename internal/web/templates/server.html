@@ -1,0 +1,57 @@
+{{define "content"}}
+{{- $c := .Data.Cluster}}
+{{- $r := .Data.Room}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/servers">战斗服</a><span>/</span><a href="/clusters/{{$c}}">{{$c}}</a>{{if $r.Node}}<span>/</span><a href="/clusters/{{$c}}/nodes/{{$r.Node}}">{{or .Data.Machine $r.Node}}</a>{{end}}</div>
+    <h1>{{$r.ID}} {{template "state" (shown $r)}}</h1>
+    <p class="subline">{{if $r.Matches}}在跑 {{len $r.Matches}} 局，最多 {{$r.Capacity}} 局{{if $r.Retiring}}；不再接新的对局，打完就停掉{{end}}。{{else if $r.Retiring}}空闲，正在停掉。{{else}}空闲，可以同时跑 {{$r.Capacity}} 局。{{end}}</p>
+  </div>
+</header>
+{{template "errors" .Data.Errs}}
+<div class="panel">
+  <dl class="facts">
+    <div><dt>机器</dt><dd>{{if $r.Node}}<a class="link" href="/clusters/{{$c}}/nodes/{{$r.Node}}">{{or .Data.Machine $r.Node}}</a>{{else}}–{{end}}</dd></div>
+    <div><dt>玩家连接地址</dt><dd><span class="mono" data-copy="{{$r.Address}}:{{$r.Port}}">{{$r.Address}}:{{$r.Port}}</span></dd></div>
+    <div><dt>启动</dt><dd>{{age $r.Created}}前</dd></div>
+    <div><dt>CPU / 内存</dt><dd>{{.Data.CPU}} 核 / {{.Data.Memory}}</dd></div>
+    <div class="wide"><dt>构建</dt><dd>{{if $r.Build}}<a class="name" href="/builds/{{$r.Build}}">#{{$r.Build}}</a>{{else}}<strong>{{tag $r.Image}}</strong>{{end}} <span class="mono muted">{{$r.Image}}</span></dd></div>
+    <div><dt>游戏</dt><dd>{{or $r.Game "–"}}</dd></div>
+    <div><dt>部署</dt><dd class="mono">{{$r.Fleet}}</dd></div>
+  </dl>
+</div>
+<section class="section">
+  <h2>对局 <span class="muted">{{len $r.Matches}} / {{$r.Capacity}}</span></h2>
+  <div class="panel">
+    <div class="scroll">
+    <table>
+      <thead><tr><th>matchId</th><th>开局</th><th>通道</th><th>席位 0 · Nakama userId</th><th>席位 1 · Nakama userId</th></tr></thead>
+      <tbody>
+      {{- range .Data.Matches}}
+        <tr>
+          <td class="two"><span class="mono" data-copy="{{.ID}}">{{.ID}}</span><div class="sub mono">{{or .Compat "–"}}</div></td>
+          <td>{{if .Allocated.IsZero}}<span class="muted">–</span>{{else}}{{age .Allocated}}前{{end}}</td>
+          <td>{{or .Channel "–"}}</td>
+          {{- range .Players}}
+          <td><span class="mono" data-copy="{{.UserID}}">{{.UserID}}</span></td>
+          {{- end}}
+        </tr>
+      {{- else}}
+        <tr><td colspan="5" class="empty">还没有分配对局。</td></tr>
+      {{- end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+{{- if .Data.Pod}}
+<section class="section">
+  <h2>日志 <span class="muted">{{.Data.Container}}，最后 100 行</span><a class="more" href="/clusters/{{$c}}/pods/{{.Data.LogNamespace}}/{{$r.ID}}/log">完整日志 →</a></h2>
+  <div class="panel"><pre class="log">{{.Data.Log}}</pre></div>
+</section>
+{{- end}}
+<section class="section">
+  <h2>事件</h2>
+  <div class="panel">{{template "events" .Data.Events}}</div>
+</section>
+{{end}}

@@ -1,0 +1,426 @@
+package release
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/xuhuanhello/gamefleet/internal/cluster"
+	"github.com/xuhuanhello/gamefleet/internal/cluster/clustertest"
+	"github.com/xuhuanhello/gamefleet/internal/registry"
+	"github.com/xuhuanhello/gamefleet/internal/sites"
+	"github.com/xuhuanhello/gamefleet/internal/store"
+)
+
+// images is a registry with images by tag.
+type images map[string]registry.Image
+
+func (i images) Inspect(_ context.Context, repo, ref string) (registry.Image, error) {
+	for tag, img := range i {
+		if ref == tag || ref == img.Digest {
+			return img, nil
+		}
+	}
+	return registry.Image{}, registry.ErrNotFound
+}
+
+func image(digest, compat, version string) registry.Image {
+	return registry.Image{Digest: digest, Port: 7770, Protocol: "UDP", Labels: map[string]string{
+		LabelCompat: compat, LabelVersion: version, LabelRevision: "abc",
+	}}
+}
+
+type fixture struct {
+	svc   *Service
+	store *store.Store
+	us    *clustertest.Fake
+	now   time.Time
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	s, err := store.Open(filepath.Join(t.TempDir(), "gamefleet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	f := &fixture{store: s, us: clustertest.New("us-1", 0), now: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)}
+	s.SetClock(func() time.Time { return f.now })
+	reg := images{
+		"141": image("sha256:aaa", "net7", "141"),
+		"142": image("sha256:bbb", "net7", "142"),
+		"bad": {Digest: "sha256:ccc", Port: 7770, Protocol: "UDP", Labels: map[string]string{LabelCompat: "net7"}},
+	}
+	f.svc = New(s, reg, "fleet.example.com", sites.New(sites.Site{Name: "us-1", Region: "us", Cluster: f.us}), 24*time.Hour,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return f
+}
+
+func (f *fixture) reconcile(t *testing.T) {
+	t.Helper()
+	if err := f.svc.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *fixture) register(t *testing.T, tag string) store.Build {
+	t.Helper()
+	b, _, err := f.svc.Register(context.Background(), Registration{Repository: "billiards", Tag: tag}, "key:ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func (f *fixture) deploy(t *testing.T, b store.Build) store.Deployment {
+	t.Helper()
+	req := DeployRequest{BuildID: b.ID, Cluster: "us-1", Buffer: 2, MaxReplicas: 10, Rooms: 50, Resources: Defaults.Resources}
+	d, err := f.svc.Deploy(context.Background(), req, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func (f *fixture) state(t *testing.T, id int64) string {
+	t.Helper()
+	var d store.Deployment
+	err := f.store.View(context.Background(), func(tx *store.Tx) error {
+		var err error
+		d, err = tx.Deployment(id)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d.State
+}
+
+func (f *fixture) resolve(t *testing.T, channel string) string {
+	t.Helper()
+	target, err := f.svc.Resolve(context.Background(), "billiards", channel, "net7", "us")
+	if errors.Is(err, ErrNoRoute) {
+		return "none"
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return target.Fleet
+}
+
+func TestRegister(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	b, created, err := f.svc.Register(ctx, Registration{Repository: "billiards", Tag: "141", Note: "first"}, "key:ci")
+	if err != nil || !created {
+		t.Fatalf("register: %v, created %v", err, created)
+	}
+	if b.ID != 1 || b.Compat != "net7" || b.Version() != "141" || b.Port != 7770 || b.RegisteredBy != "key:ci" {
+		t.Errorf("build = %+v", b)
+	}
+	again, created, err := f.svc.Register(ctx, Registration{Repository: "billiards", Digest: "sha256:aaa"}, "key:ci")
+	if err != nil || created || again.ID != b.ID {
+		t.Errorf("registering again: %+v, created %v, %v", again, created, err)
+	}
+	cases := map[string]struct {
+		r    Registration
+		want error
+	}{
+		"no reference":      {Registration{Repository: "billiards"}, ErrInvalid},
+		"missing image":     {Registration{Repository: "billiards", Tag: "999"}, registry.ErrNotFound},
+		"missing labels":    {Registration{Repository: "billiards", Tag: "bad"}, registry.ErrUnusable},
+		"tag is another":    {Registration{Repository: "billiards", Tag: "141", Digest: "sha256:bbb"}, ErrInvalid},
+		"control character": {Registration{Repository: "billiards", Tag: "142", Note: "a\x00b"}, ErrInvalid},
+	}
+	for name, c := range cases {
+		if _, _, err := f.svc.Register(ctx, c.r, "key:ci"); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
+	}
+}
+
+// The whole release of section 8.2: canary, promotion, draining, reclaim and rollback.
+func TestReleaseLifecycle(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	b141 := f.register(t, "141")
+	d141 := f.deploy(t, b141)
+	if f.state(t, d141.ID) != store.StateNew || f.resolve(t, Stable) != "none" {
+		t.Fatal("a deployment without a route must not get matches")
+	}
+	if err := f.svc.SetRoute(ctx, Stable, b141.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	fleet, spec, ok := f.us.ManagedFleet("billiards-1")
+	if !ok || fleet.Deployment != d141.ID || spec.Image != "fleet.example.com/billiards@sha256:aaa" || spec.Port != 7770 || spec.Replicas != 2 || spec.Rooms != 50 {
+		t.Fatalf("fleet = %+v, spec = %+v", fleet, spec)
+	}
+	if a, ok := f.us.Autoscaler("billiards-1"); !ok || a.Buffer != 2 || a.MaxReplicas != 10 {
+		t.Fatalf("autoscaler = %+v, %v", a, ok)
+	}
+	if f.state(t, d141.ID) != store.StateServing || f.resolve(t, Stable) != "billiards-1" {
+		t.Fatal("stable should go to 141")
+	}
+
+	// 142 goes to testers first.
+	b142 := f.register(t, "142")
+	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("routing to an undeployed build: %v", err)
+	}
+	d142 := f.deploy(t, b142)
+	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if f.resolve(t, Canary) != "billiards-2" || f.resolve(t, Stable) != "billiards-1" {
+		t.Fatal("testers get 142, everyone else 141")
+	}
+	views, err := f.svc.Routes(ctx, "billiards")
+	if err != nil || len(views) != 2 || views[0].Channel != Canary || views[0].Build != b142.ID || len(views[0].Regions) != 1 {
+		t.Fatalf("routes = %+v, %v", views, err)
+	}
+
+	// Promotion: 141 drains, but a match is still running on it. The canary
+	// ends: testers play with everyone again.
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if f.state(t, d141.ID) != store.StateDraining || f.resolve(t, Stable) != "billiards-2" || f.resolve(t, Canary) != "none" {
+		t.Fatal("after promotion stable goes to 142, 141 drains and the canary ends")
+	}
+	f.us.SetAllocated("billiards-1", 1)
+	f.reconcile(t)
+	fleet, _, _ = f.us.ManagedFleet("billiards-1")
+	if _, ok := f.us.Autoscaler("billiards-1"); ok || fleet.Replicas != 0 {
+		t.Fatalf("draining fleet = %+v, autoscaler kept %v", fleet, ok)
+	}
+	if err := f.svc.Undeploy(ctx, d141.ID, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("undeploy with a match running: %v", err)
+	}
+
+	// The match ends; the Fleet stays for the retention time, then goes.
+	f.us.SetAllocated("billiards-1", 0)
+	f.now = f.now.Add(23 * time.Hour)
+	f.reconcile(t)
+	if _, _, ok := f.us.ManagedFleet("billiards-1"); !ok {
+		t.Fatal("reclaimed before the retention time")
+	}
+	f.now = f.now.Add(2 * time.Hour)
+	f.reconcile(t)
+	if _, _, ok := f.us.ManagedFleet("billiards-1"); ok || f.state(t, d141.ID) != store.StateDeleted {
+		t.Fatal("not reclaimed after the retention time")
+	}
+
+	// Rolling back needs 141 deployed again.
+	if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("rollback to a reclaimed build: %v", err)
+	}
+	again := f.deploy(t, b141)
+	if again.State != store.StateNew {
+		t.Fatalf("redeployed 141 is %s", again.State)
+	}
+	if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if f.resolve(t, Stable) != "billiards-1" || f.state(t, again.ID) != store.StateServing || f.state(t, d142.ID) != store.StateDraining {
+		t.Fatal("after rollback stable goes to 141 and 142, routed by nothing, drains")
+	}
+	// Testers go on with 142 while everyone else is back on 141.
+	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if f.resolve(t, Canary) != "billiards-2" || f.state(t, d142.ID) != store.StateServing {
+		t.Fatal("canary on 142 again")
+	}
+	if _, ok := f.us.Autoscaler("billiards-1"); !ok {
+		t.Fatal("the rolled-back fleet keeps no buffer")
+	}
+
+	// End the canary: 142 drains and can be deleted at once.
+	if err := f.svc.Undeploy(ctx, d142.ID, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("undeploying a routed build: %v", err)
+	}
+	if err := f.svc.DeleteRoute(ctx, "billiards", Canary, "net7", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if f.state(t, d142.ID) != store.StateDraining || f.resolve(t, Canary) != "none" {
+		t.Fatal("after ending the canary 142 drains")
+	}
+	if err := f.svc.Undeploy(ctx, d142.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := f.us.ManagedFleet("billiards-2"); ok || f.state(t, d142.ID) != store.StateDeleted {
+		t.Fatal("undeploy left the fleet")
+	}
+
+	var log []store.Entry
+	_ = f.store.View(ctx, func(tx *store.Tx) error {
+		log, err = tx.AuditLog(0, 100)
+		return err
+	})
+	var actions []string
+	for i := len(log) - 1; i >= 0; i-- {
+		actions = append(actions, log[i].Actor+" "+log[i].Action)
+	}
+	want := []string{
+		"key:ci build.register", "admin deployment.create", "admin route.set",
+		"key:ci build.register", "admin deployment.create", "admin route.set",
+		"admin route.promote", "admin route.delete", "gamefleet deployment.reclaim",
+		"admin deployment.create", "admin route.rollback", "admin route.set",
+		"admin route.delete", "admin deployment.delete",
+	}
+	if len(actions) != len(want) {
+		t.Fatalf("audit log:\n%v\nwant\n%v", actions, want)
+	}
+	for i := range want {
+		if actions[i] != want[i] {
+			t.Errorf("audit[%d] = %s, want %s", i, actions[i], want[i])
+		}
+	}
+}
+
+func TestLeftoverFleetsGoOnceEmpty(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.us.CreateFleet(ctx, cluster.FleetSpec{Name: "billiards-9", Deployment: 99, Replicas: 2}); err != nil {
+		t.Fatal(err)
+	}
+	f.us.SetAllocated("billiards-9", 1)
+	f.reconcile(t)
+	fleet, _, ok := f.us.ManagedFleet("billiards-9")
+	if !ok || fleet.Replicas != 0 {
+		t.Fatalf("a leftover with a match must scale to 0 and stay: %+v %v", fleet, ok)
+	}
+	f.us.SetAllocated("billiards-9", 0)
+	f.reconcile(t)
+	if _, _, ok := f.us.ManagedFleet("billiards-9"); ok {
+		t.Fatal("empty leftover kept")
+	}
+}
+
+func TestDrainingStopsGameServersWithoutMatches(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	b := f.register(t, "141")
+	f.deploy(t, b)
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	f.us.AddRoom(cluster.Room{ID: "busy", Fleet: "billiards-1", State: "Allocated", Capacity: 50,
+		Matches: []cluster.Match{{ID: "m-1"}}, Stale: []string{"m-0"}})
+	f.us.AddRoom(cluster.Room{ID: "empty", Fleet: "billiards-1", State: "Allocated", Capacity: 50, LastAllocated: f.now})
+	f.us.AddRoom(cluster.Room{ID: "idle", Fleet: "billiards-1", State: "Ready", Capacity: 50})
+
+	// While the build serves, an empty game server waits for the next match.
+	f.reconcile(t)
+	if room, _ := f.us.Get(ctx, "empty"); room == nil {
+		t.Fatal("an empty game server of a serving build was stopped")
+	}
+	if room, _ := f.us.Get(ctx, "busy"); room == nil || len(room.Stale) != 0 {
+		t.Fatalf("notes of finished matches kept: %+v", room)
+	}
+
+	// Draining, it goes; the one still running a match stays.
+	b2 := f.register(t, "142")
+	f.deploy(t, b2)
+	if err := f.svc.SetRoute(ctx, Stable, b2.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if room, _ := f.us.Get(ctx, "empty"); room != nil {
+		t.Fatal("an empty game server of a draining build was kept")
+	}
+	if room, _ := f.us.Get(ctx, "busy"); room == nil {
+		t.Fatal("a game server running a match was stopped")
+	}
+}
+
+func TestServingStopsGameServersIdleForLong(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	b := f.register(t, "141")
+	f.deploy(t, b)
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	room := func(id string, idle time.Duration, matches ...cluster.Match) cluster.Room {
+		return cluster.Room{ID: id, Fleet: "billiards-1", State: "Allocated", Capacity: 50,
+			LastAllocated: f.now.Add(-idle), Matches: matches}
+	}
+	f.us.AddRoom(room("recent", time.Minute))
+	f.us.AddRoom(room("idle", IdleTimeout))
+	f.us.AddRoom(room("raced", IdleTimeout))
+	f.us.AddRoom(room("busy", time.Hour, cluster.Match{ID: "m-1"}))
+
+	// First they stop taking matches, so that none is given one as it stops.
+	f.reconcile(t)
+	for id, want := range map[string]bool{"recent": false, "idle": true, "raced": true, "busy": false} {
+		if r, _ := f.us.Get(ctx, id); r == nil || f.us.Retiring(id) != want {
+			t.Fatalf("%s: retiring %v, want %v and kept", id, f.us.Retiring(id), want)
+		}
+	}
+
+	// Allocation gave one a match just before that.
+	raced := room("raced", 0, cluster.Match{ID: "m-2"})
+	raced.Retiring = true
+	f.us.AddRoom(raced)
+	f.reconcile(t)
+	if r, _ := f.us.Get(ctx, "idle"); r != nil {
+		t.Fatal("an idle game server was kept")
+	}
+	for _, id := range []string{"recent", "raced", "busy"} {
+		if r, _ := f.us.Get(ctx, id); r == nil {
+			t.Fatalf("%s was stopped", id)
+		}
+	}
+
+	// It goes once that match is over.
+	f.us.ReleaseMatch("raced", "m-2")
+	f.reconcile(t)
+	if r, _ := f.us.Get(ctx, "raced"); r != nil {
+		t.Fatal("a retiring game server was kept after its match")
+	}
+}
+
+func TestDeployChecks(t *testing.T) {
+	f := newFixture(t)
+	b := f.register(t, "141")
+	ctx := context.Background()
+	base := DeployRequest{BuildID: b.ID, Cluster: "us-1", Buffer: 2, MaxReplicas: 10, Rooms: 50, Resources: Defaults.Resources}
+	cases := map[string]func(*DeployRequest){
+		"unknown cluster": func(r *DeployRequest) { r.Cluster = "sg-1" },
+		"no buffer":       func(r *DeployRequest) { r.Buffer = 0 },
+		"max below":       func(r *DeployRequest) { r.MaxReplicas = 1 },
+		"limit below":     func(r *DeployRequest) { r.Resources.CPULimit = 100 },
+		"tiny memory":     func(r *DeployRequest) { r.Resources.MemoryRequest = 1 },
+	}
+	for name, mutate := range cases {
+		r := base
+		mutate(&r)
+		if _, err := f.svc.Deploy(ctx, r, "admin"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	missing := base
+	missing.BuildID = 99
+	if _, err := f.svc.Deploy(ctx, missing, "admin"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing build: %v", err)
+	}
+	f.deploy(t, b)
+	if _, err := f.svc.Deploy(ctx, base, "admin"); !errors.Is(err, ErrConflict) {
+		t.Errorf("deploying twice: %v", err)
+	}
+	defaults, err := f.svc.DefaultsFor(ctx, "billiards", "us-1")
+	if err != nil || defaults.Buffer != 2 {
+		t.Errorf("defaults = %+v, %v", defaults, err)
+	}
+}

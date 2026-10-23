@@ -1,0 +1,26 @@
+{{define "content"}}
+{{- $d := .Data}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/clusters/{{$d.Cluster}}">{{$d.Cluster}}</a><span>/</span><a href="/clusters/{{$d.Cluster}}/nodes/{{$d.Pod.Node}}">{{$d.Pod.Node}}</a><span>/</span><span>日志</span></div>
+    <h1>{{$d.Pod.Name}}</h1>
+    <p class="subline">命名空间 {{$d.Pod.Namespace}}。Pod 删除后，它的日志也一起没了。</p>
+  </div>
+</header>
+<div class="toolbar">
+  <div><span class="label">容器</span><span class="seg">
+    {{- range $d.Pod.Containers}}
+    {{- if eq . $d.Container}}<strong>{{.}}</strong>{{else}}<a href="?container={{.}}&amp;lines={{$d.Lines}}">{{.}}</a>{{end}}
+    {{- end}}
+  </span></div>
+  <div><span class="label">最后几行</span><span class="seg">
+    {{- range $d.Options}}
+    {{- if eq . $d.Lines}}<strong>{{.}}</strong>{{else}}<a href="?container={{$d.Container}}&amp;lines={{.}}">{{.}}</a>{{end}}
+    {{- end}}
+  </span></div>
+</div>
+{{- if $d.Err}}
+<p class="error">{{$d.Err}}</p>
+{{- end}}
+<div class="panel"><pre class="log tall">{{$d.Log}}</pre></div>
+{{end}}

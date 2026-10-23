@@ -1,0 +1,20 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/clusters/{{.Data.Cluster}}">{{.Data.Cluster}}</a><span>/</span><span>事件</span></div>
+    <h1>事件</h1>
+    <p class="subline">K8s 只保留最近一小时左右的事件，最新的在前。</p>
+  </div>
+  {{template "live"}}
+</header>
+<div class="toolbar">
+  <span class="seg">
+    {{- if .Data.Warnings}}<a href="/clusters/{{.Data.Cluster}}/events">全部</a><strong>只看警告</strong>
+    {{- else}}<strong>全部</strong><a href="/clusters/{{.Data.Cluster}}/events?type=Warning">只看警告</a>{{end -}}
+  </span>
+</div>
+{{- if .Data.Err}}
+<p class="error">{{.Data.Err}}</p>
+{{- end}}
+<div class="panel">{{template "events" .Data.Events}}</div>
+{{end}}

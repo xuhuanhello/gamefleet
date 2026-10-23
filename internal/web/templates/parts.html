@@ -1,0 +1,157 @@
+{{define "icon-search"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>{{end}}
+{{define "icon-overview"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="2" width="5" height="5" rx="1.2"/><rect x="2" y="9" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/></svg>{{end}}
+{{define "icon-servers"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M6.8 5.6v4.8L10.6 8z"/></svg>{{end}}
+{{define "icon-builds"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.75l5.5 3v6.5L8 14.25l-5.5-3v-6.5z"/><path d="M2.5 4.75L8 7.75l5.5-3M8 7.75v6.5"/></svg>{{end}}
+{{define "icon-routes"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="3.5" cy="8" r="1.5"/><path d="M5 8h2.5c1.5 0 2-4 3.5-4H13M7.5 8c1.5 0 2 4 3.5 4H13"/><path d="M11.5 2.5L13 4l-1.5 1.5M11.5 10.5L13 12l-1.5 1.5"/></svg>{{end}}
+{{define "icon-settings"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6"/><circle cx="10" cy="4.5" r="1.5"/><circle cx="6" cy="11.5" r="1.5"/></svg>{{end}}
+{{define "icon-plus"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>{{end}}
+{{define "icon-check"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>{{end}}
+{{define "icon-cluster"}}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="4.5" rx="1.2"/><rect x="2.5" y="9" width="11" height="4.5" rx="1.2"/><path d="M5 4.75h.01M5 11.25h.01"/></svg>{{end}}
+
+{{define "live"}}<span class="live-note">每 10 秒自动刷新</span>{{end}}
+
+{{define "state"}}<span class="pill {{state .}}" title="{{.}}">{{stateLabel .}}</span>{{end}}
+
+{{define "gauge"}}{{if .Known}}<span class="gauge"><meter min="0" max="100" low="70" high="90" optimum="0" value="{{.Percent}}">{{.Percent}}%</meter><span>{{.Used}} / {{.Total}}</span></span>{{else}}<span class="muted">–</span>{{end}}{{end}}
+
+{{define "pair"}}<div class="pair"><span class="k">使用</span>{{template "gauge" .Used}}<span class="k">请求</span>{{template "gauge" .Requested}}</div>{{end}}
+
+{{define "kpiGauge"}}
+{{- if .Known}}
+<div class="figure">{{.Used}}<span class="of"> / {{.Total}}</span></div>
+<meter min="0" max="100" low="70" high="90" optimum="0" value="{{.Percent}}">{{.Percent}}%</meter>
+<div class="sub">已用 {{.Percent}}%</div>
+{{- else}}
+<div class="figure muted">–</div>
+<div class="sub">读不到 metrics-server</div>
+{{- end}}
+{{end}}
+
+{{define "errors"}}{{range .}}<p class="error">{{.}}</p>{{end}}{{end}}
+
+{{define "nodeState"}}
+{{- if .Ready}}<span class="pill ok" title="Ready">正常</span>{{else}}<span class="pill bad" title="NotReady">失联</span>{{end}}
+{{- if not .Retiring.IsZero}} <span class="pill wait">下线中</span>{{else if .Unschedulable}} <span class="pill wait" title="cordoned">停止调度</span>{{end}}
+{{- range .Pressure}} <span class="pill bad">{{.}}</span>{{end}}
+{{- end}}
+
+{{define "deployState"}}{{$s := deployState .}}<span class="pill {{index $s 0}}">{{index $s 1}}</span>{{end}}
+
+{{define "channels"}}{{range .}} <span class="pill {{if eq . "stable"}}strong{{else}}wait{{end}}">{{channel .}}</span>{{end}}{{end}}
+
+{{define "buildCell"}}
+{{- if .Deployment}}<a class="name" href="/builds/{{.Deployment.BuildID}}">#{{.Deployment.BuildID}}</a><div class="sub">版本 {{.Version}} · <span class="mono" title="联机版本：只有这个版本的客户端会进它">{{breakable .Compat}}</span></div>
+{{- else}}<strong>{{tag .Image}}</strong><div class="sub">手动部署</div>{{end}}
+{{- end}}
+
+{{define "fleets"}}
+<div class="scroll">
+<table>
+  <thead><tr><th>构建</th><th>状态</th><th>部署</th><th class="num">战斗服</th><th class="num">对局</th><th class="num">还能开</th></tr></thead>
+  <tbody>
+  {{- range .}}
+    <tr>
+      <td class="two">{{template "buildCell" .}}</td>
+      <td>{{if .Deployment}}{{template "deployState" .Deployment.State}}{{template "channels" .Channels}}{{else}}<span class="muted">–</span>{{end}}</td>
+      <td class="mono">{{.Name}}</td>
+      <td class="num">{{.Replicas}}</td>
+      <td class="num">{{.Playing}}</td>
+      <td class="num">{{.Free}}</td>
+    </tr>
+  {{- else}}
+    <tr><td colspan="6" class="empty">这个集群还没有部署战斗服。</td></tr>
+  {{- end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+{{define "settingsTabs"}}
+<nav class="seg" aria-label="设置">
+  {{if eq . "keys"}}<strong>API key</strong>{{else}}<a href="/settings/keys">API key</a>{{end}}
+  {{if eq . "runtime"}}<strong>运行时配置</strong>{{else}}<a href="/settings/runtime">运行时配置</a>{{end}}
+  {{if eq . "audit"}}<strong>审计日志</strong>{{else}}<a href="/settings/audit">审计日志</a>{{end}}
+  {{if eq . "update"}}<strong>更新</strong>{{else}}<a href="/settings/update">更新</a>{{end}}
+</nav>
+{{end}}
+
+{{define "events"}}
+<div class="scroll">
+<table>
+  <thead><tr><th>时间</th><th>类型</th><th>对象</th><th>原因</th><th>内容</th><th class="num">次数</th></tr></thead>
+  <tbody>
+  {{- range .}}
+    <tr>
+      <td>{{age .Last}}前</td>
+      <td>{{if eq .Type "Warning"}}<span class="pill wait" title="Warning">警告</span>{{else}}<span class="pill plain" title="{{.Type}}">正常</span>{{end}}</td>
+      <td><span class="muted">{{.Kind}}</span> <span class="mono">{{.Name}}</span></td>
+      <td>{{.Reason}}</td>
+      <td class="wrap">{{.Message}}</td>
+      <td class="num">{{.Count}}</td>
+    </tr>
+  {{- else}}
+    <tr><td colspan="6" class="empty">没有事件。K8s 只保留最近一小时左右的事件。</td></tr>
+  {{- end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+{{define "machineFields"}}
+<label>机器 IP<input name="host" value="{{.Host}}" placeholder="例如 203.0.113.30" inputmode="decimal" required></label>
+<label>登录用户<input name="user" value="{{if .User}}{{.User}}{{else}}root{{end}}" autocomplete="off" required></label>
+<label class="span">root 密码<input type="password" name="password" autocomplete="new-password" placeholder="和私钥二选一"></label>
+<label class="span">或者私钥<textarea name="key" rows="4" autocomplete="off" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+<label class="span">私钥密码<input type="password" name="passphrase" autocomplete="new-password" placeholder="私钥没有密码就留空"></label>
+{{end}}
+
+{{define "progress"}}
+<div class="progress-card">
+  <progress max="{{len .Steps}}" value="{{.Value}}">{{.Done}} / {{len .Steps}}</progress>
+  <ol class="stepper">
+    {{- range .Steps}}
+    <li class="{{.State}}"><span class="mark">{{if eq .State "done"}}{{template "icon-check"}}{{else if eq .State "failed"}}!{{end}}</span><span class="label">{{.Label}}</span></li>
+    {{- end}}
+  </ol>
+  {{- if .Detail}}
+  <p class="progress-detail"><span class="text">{{.Detail}}</span>{{if .Count}}<span class="figure">{{.Count}}</span>{{end}}{{if .Since}}<span class="figure">已用 {{.Since}}</span>{{end}}</p>
+  {{- end}}
+</div>
+{{end}}
+
+{{define "remoteLog"}}
+<div class="panel">
+  <div class="panel-head"><h2>安装日志</h2><span class="muted">{{.User}}@{{.Host}}{{if .Fingerprint}} · 主机指纹 <span class="mono">{{.Fingerprint}}</span>{{end}}</span></div>
+  <pre class="log">{{range .Log}}{{.}}
+{{else}}正在登录…{{end}}</pre>
+</div>
+{{end}}
+
+{{define "components"}}
+{{- $c := .Cluster}}
+<div class="scroll">
+<table>
+  <thead><tr>
+    <th>组件</th><th>状态</th>{{if .ByMachine}}<th>机器</th>{{end}}<th>运行</th><th class="num">重启</th><th class="num">CPU（核）</th><th class="num">内存</th><th></th>
+  </tr></thead>
+  <tbody>
+  {{- range .Rows}}
+    <tr>
+      <td class="two"><span class="name">{{.Component}}</span><div class="sub mono">{{.Namespace}} · {{.Name}}</div></td>
+      <td>{{if .Healthy}}<span class="pill ok">正常</span>{{else if eq .Status "Running"}}<span class="pill bad" title="Running, not ready">未就绪</span>{{else}}{{template "state" .Status}}{{end}}</td>
+      {{- if $.ByMachine}}
+      <td>{{if .Node}}<a class="name" href="/clusters/{{$c}}/nodes/{{.Node}}">{{or (index $.Machines .Node) .Node}}</a>{{else}}<span class="muted">–</span>{{end}}</td>
+      {{- end}}
+      <td>{{age .Created}}</td>
+      <td class="num">{{.Restarts}}</td>
+      <td class="num">{{.CPU}}</td>
+      <td class="num">{{.Memory}}</td>
+      <td class="num"><a class="link" href="/clusters/{{$c}}/pods/{{.Namespace}}/{{.Name}}/log">日志</a></td>
+    </tr>
+  {{- else}}
+    <tr><td colspan="8" class="empty">没有系统组件。</td></tr>
+  {{- end}}
+  </tbody>
+</table>
+</div>
+{{end}}

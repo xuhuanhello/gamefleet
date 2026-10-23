@@ -1,0 +1,48 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <h1>设置</h1>
+    <p class="subline">机器调用 GameFleet 用的 API key、战斗服的运行时配置、谁在什么时候改过什么，以及 GameFleet 自己的更新。</p>
+  </div>
+</header>
+<div class="toolbar">{{template "settingsTabs" "runtime"}}</div>
+{{- range .Data.Games}}
+{{- $g := .Game}}
+<div class="panel">
+  <div class="panel-head"><h2>{{$g}}</h2><span class="muted">写进每个集群的 Secret {{$g}}-runtime，战斗服启动时读成环境变量</span></div>
+  <table>
+    <thead><tr><th>变量</th><th>值</th><th>更新</th><th></th></tr></thead>
+    <tbody>
+    {{- range .Vars}}
+      <tr>
+        <td class="mono"><strong>{{.Name}}</strong></td>
+        <td class="muted">已设置，不再显示</td>
+        <td class="two">{{age .Updated}}前<div class="sub">{{.UpdatedBy}}</div></td>
+        <td class="num">
+          <form action="/settings/runtime/delete" method="post" data-confirm="删除 {{$g}} 的 {{.Name}}？之后新开的战斗服不再从 GameFleet 拿到它。">
+            <input type="hidden" name="game" value="{{$g}}"><input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit" class="quiet">删除</button>
+          </form>
+        </td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</div>
+{{- else}}
+<div class="panel"><p class="hint">还没有运行时配置。战斗服需要的变量（Nakama 地址、上报结果用的 key、验票公钥）在下面填。</p></div>
+{{- end}}
+<div class="panel">
+  <div class="panel-head"><h2>设置一个变量</h2></div>
+  <form class="form-grid narrow" action="/settings/runtime" method="post">
+    <label>游戏<input name="game" list="games" value="{{with .Data.Known}}{{index . 0}}{{end}}" required></label>
+    <datalist id="games">{{range .Data.Known}}<option value="{{.}}">{{end}}</datalist>
+    <label>变量名<input name="name" placeholder="例如 NAKAMA_URL" pattern="[A-Z_][A-Z0-9_]*" required></label>
+    <label class="span">值<textarea name="value" rows="3" autocomplete="off" spellcheck="false"></textarea></label>
+    <div class="span form-actions">
+      <button type="submit" class="primary">保存</button>
+      <span class="muted">同名变量会被替换。半分钟内写进所有集群；已经在跑的战斗服不变，之后新开的才用新值。</span>
+    </div>
+  </form>
+</div>
+{{end}}

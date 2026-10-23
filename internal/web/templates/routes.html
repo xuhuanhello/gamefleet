@@ -1,0 +1,65 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <h1>路由</h1>
+    <p class="subline">决定新对局进哪个构建。Nakama 里 testers 分组的账号走灰度，其他人走正式；已经开始的对局不受影响。</p>
+  </div>
+</header>
+<p class="finding {{.Data.Finding.Level}}"><span class="dot"></span><span class="text">{{.Data.Finding.Text}}</span></p>
+<div class="panel">
+  <div class="scroll">
+  <table>
+    <thead><tr><th>游戏</th><th>联机版本</th><th>正式</th><th>灰度</th><th>地区</th><th></th></tr></thead>
+    <tbody>
+    {{- range .Data.Rows}}
+    {{- $row := .}}
+      <tr>
+        <td>{{.Game}}</td>
+        <td class="mono">{{.Compat}}</td>
+        <td class="two">{{template "routeCell" .Stable}}</td>
+        <td class="two">{{template "routeCell" .Canary}}</td>
+        <td>{{with or .Stable .Canary}}{{join .Regions "、"}}{{end}}</td>
+        <td>
+          <div class="actions end">
+          {{- if and .Canary .Stable (ne .Canary.BuildID .Stable.BuildID)}}
+            <form action="/routes/promote" method="post" data-confirm="把正式通道改成 #{{.Canary.BuildID}}？所有普通玩家的新对局都会进这个构建。">
+              <input type="hidden" name="game" value="{{.Game}}"><input type="hidden" name="compat" value="{{.Compat}}">
+              <button type="submit">晋升为正式</button>
+            </form>
+          {{- end}}
+          {{- if .Canary}}
+            <form action="/routes/delete" method="post" data-confirm="结束灰度？测试账号的新对局会回到正式通道。">
+              <input type="hidden" name="game" value="{{.Game}}"><input type="hidden" name="channel" value="canary"><input type="hidden" name="compat" value="{{.Compat}}">
+              <button type="submit" class="quiet">结束灰度</button>
+            </form>
+          {{- end}}
+          {{- if .Stable}}
+            <form action="/routes/delete" method="post" data-confirm="停止联机版本 {{.Compat}} 的正式服务？拿这个版本客户端的玩家排队时会被提示更新客户端{{if .Canary}}（测试账号仍然进灰度）{{end}}；正在打的对局照常打完，#{{.Stable.BuildID}} 开始排空。">
+              <input type="hidden" name="game" value="{{.Game}}"><input type="hidden" name="channel" value="stable"><input type="hidden" name="compat" value="{{.Compat}}">
+              <button type="submit" class="quiet">停止服务</button>
+            </form>
+          {{- end}}
+          {{- if and .Stable .Stable.Previous}}
+            <form action="/routes/rollback" method="post" data-confirm="把正式通道改回 #{{.Stable.PreviousBuildID}}？">
+              <input type="hidden" name="game" value="{{.Game}}"><input type="hidden" name="channel" value="stable"><input type="hidden" name="compat" value="{{.Compat}}">
+              <button type="submit" class="quiet">回滚到 #{{.Stable.PreviousBuildID}}</button>
+            </form>
+          {{- end}}
+          </div>
+        </td>
+      </tr>
+    {{- else}}
+      <tr><td colspan="6" class="empty">还没有路由。</td></tr>
+    {{- end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="hint">每个联机版本一行：新旧客户端可以同时在线，各进各的构建。不再支持一个旧版本时，点它的"停止服务"，拿这个版本客户端的玩家排队时会被提示更新。要把一个构建设为灰度或正式，打开它的构建页。回滚和晋升只改路由，旧构建在保留期内还在，切回去马上生效。</p>
+</div>
+{{end}}
+
+{{define "routeCell"}}
+{{- if .}}<a class="name" href="/builds/{{.BuildID}}">#{{.BuildID}}</a> <span class="muted">版本 {{.Build.Version}}</span>
+<div class="sub">{{age .Updated}}前 · {{.UpdatedBy}}{{if .Previous}} · 之前 #{{.PreviousBuildID}}{{end}}</div>
+{{- else}}<span class="muted">–</span>{{end}}
+{{- end}}

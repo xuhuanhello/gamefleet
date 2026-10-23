@@ -1,0 +1,31 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <h1>设置</h1>
+    <p class="subline">机器调用 GameFleet 用的 API key、战斗服的运行时配置、谁在什么时候改过什么，以及 GameFleet 自己的更新。</p>
+  </div>
+</header>
+<div class="toolbar">{{template "settingsTabs" "audit"}}</div>
+<div class="panel">
+  <div class="panel-head"><h2>审计日志</h2><span class="muted">新的在前</span></div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>时间</th><th>谁</th><th>操作</th><th>对象</th><th>详情</th></tr></thead>
+    <tbody>
+    {{- range .Data.Entries}}
+      <tr>
+        <td title="{{.At.UTC.Format "2006-01-02 15:04:05 UTC"}}">{{age .At}}前</td>
+        <td>{{if eq .Actor "gamefleet"}}<span class="muted">GameFleet 自动</span>{{else}}{{.Actor}}{{end}}</td>
+        <td>{{action .Action}}</td>
+        <td class="mono">{{.Target}}</td>
+        <td class="wrap">{{or .Detail "–"}}</td>
+      </tr>
+    {{- else}}
+      <tr><td colspan="5" class="empty">还没有记录。</td></tr>
+    {{- end}}
+    </tbody>
+  </table>
+  </div>
+  {{- if .Data.Older}}<p class="hint"><a class="link" href="/settings/audit?before={{.Data.Older}}">更早的记录 →</a></p>{{end}}
+</div>
+{{end}}

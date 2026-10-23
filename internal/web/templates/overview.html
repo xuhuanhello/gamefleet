@@ -1,0 +1,81 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <h1>总览</h1>
+    <p class="subline">各集群现在能不能开局、哪里在打。数据直接读自 K8s。</p>
+  </div>
+  {{template "live"}}
+</header>
+{{- range .Data}}
+{{- $c := .Name}}
+<section class="section">
+  <h2>{{.Name}} <span class="muted">地区 {{.Region}}</span><a class="more" href="/clusters/{{.Name}}">打开集群 →</a></h2>
+  {{- if .Err}}
+  <p class="error">读不到这个集群：{{.Err}}</p>
+  {{- else}}
+  <p class="finding {{.Finding.Level}}"><span class="dot"></span><span class="text">{{.Finding.Text}}</span></p>
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">进行中的对局</div>
+      <div class="figure">{{.Allocated}}</div>
+      <div class="sub">还能再开 {{.Ready}} 局</div>
+    </div>
+    <div class="kpi">
+      <div class="label">机器</div>
+      <div class="figure">{{.NodesReady}}<span class="of"> / {{.Nodes}} 正常</span></div>
+    </div>
+    <div class="kpi"><div class="label">CPU（核）</div>{{template "kpiGauge" .CPU}}</div>
+    <div class="kpi"><div class="label">内存</div>{{template "kpiGauge" .Memory}}</div>
+    <div class="kpi">
+      <div class="label">最近一小时的警告</div>
+      <div class="figure">{{.Warnings}}</div>
+      <div class="sub"><a class="link" href="/clusters/{{.Name}}/events?type=Warning">看警告</a></div>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="panel">
+      <div class="panel-head"><h2>进行中的对局</h2><span class="muted">{{.Allocated}} 局</span><a class="more" href="/servers?cluster={{.Name}}&amp;state=allocated">全部对局 →</a></div>
+      <div class="scroll">
+      <table>
+        <thead><tr><th>对局</th><th>机器</th><th>开局</th><th class="num">玩家</th></tr></thead>
+        <tbody>
+        {{- range .Matches}}
+          <tr>
+            <td class="two">
+              <span class="mono" data-copy="{{.ID}}">{{.ID}}</span>
+              <div class="sub"><a class="name" href="/clusters/{{$c}}/servers/{{.Server}}">{{.Server}}</a></div>
+            </td>
+            <td><a class="name" href="/clusters/{{$c}}/nodes/{{.Node}}">{{or .Machine .Node}}</a></td>
+            <td>{{age .Allocated}}前</td>
+            <td class="num">{{.Players}}</td>
+          </tr>
+        {{- else}}
+          <tr><td colspan="4" class="empty">现在没有进行中的对局。</td></tr>
+        {{- end}}
+        </tbody>
+      </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>战斗服版本</h2><a class="more" href="/routes">路由 →</a></div>
+      <table>
+        <thead><tr><th>构建</th><th>状态</th><th class="num">对局</th><th class="num">还能开</th></tr></thead>
+        <tbody>
+        {{- range .Fleets}}
+          <tr>
+            <td class="two">{{template "buildCell" .}}</td>
+            <td>{{if .Deployment}}{{template "deployState" .Deployment.State}}{{template "channels" .Channels}}{{else}}<span class="muted">–</span>{{end}}</td>
+            <td class="num">{{.Playing}}</td>
+            <td class="num">{{.Free}}</td>
+          </tr>
+        {{- else}}
+          <tr><td colspan="4" class="empty">还没有部署战斗服。</td></tr>
+        {{- end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {{- end}}
+</section>
+{{- end}}
+{{end}}

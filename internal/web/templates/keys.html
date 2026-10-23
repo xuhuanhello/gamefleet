@@ -1,0 +1,59 @@
+{{define "content"}}
+<header class="head">
+  <div>
+    <h1>设置</h1>
+    <p class="subline">机器调用 GameFleet 用的 API key、战斗服的运行时配置、谁在什么时候改过什么，以及 GameFleet 自己的更新。</p>
+  </div>
+</header>
+<div class="toolbar">{{template "settingsTabs" "keys"}}</div>
+{{- if .Data.Err}}<p class="error">{{.Data.Err}}</p>{{end}}
+{{- if .Data.NewKey}}
+<div class="panel reveal">
+  <div class="panel-head"><h2>新 key：{{.Data.NewName}}</h2></div>
+  <div class="panel-body">
+    <p><span class="mono secret" data-copy="{{.Data.NewKey}}">{{.Data.NewKey}}</span></p>
+    <p class="muted">只显示这一次。现在把它填进调用方的配置；镜像仓库登录时用户名随便填，密码就是这个 key。</p>
+  </div>
+</div>
+{{- end}}
+<div class="panel">
+  <div class="panel-head"><h2>API key</h2><span class="muted">{{len .Data.Keys}} 个</span></div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>名称</th><th>权限</th><th>创建</th><th></th></tr></thead>
+    <tbody>
+    {{- range .Data.Keys}}
+      <tr>
+        <td><strong>{{.Name}}</strong></td>
+        <td>{{range .Scopes}}<span class="pill plain" title="{{scope .}}">{{.}}</span> {{end}}</td>
+        <td class="two">{{age .Created}}前<div class="sub">{{.CreatedBy}}</div></td>
+        <td class="num">
+          <form action="/settings/keys/{{.Name}}/revoke" method="post" data-confirm="吊销 {{.Name}}？用它的调用方会马上被拒绝。">
+            <button type="submit" class="quiet">吊销</button>
+          </form>
+        </td>
+      </tr>
+    {{- else}}
+      <tr><td colspan="4" class="empty">还没有 key。</td></tr>
+    {{- end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+<div class="panel">
+  <div class="panel-head"><h2>新建 key</h2></div>
+  <form class="form-grid narrow" action="/settings/keys" method="post">
+    <label class="span">名称<input name="name" placeholder="例如 nakama-2" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="63" required></label>
+    <fieldset class="span checks">
+      <legend>权限</legend>
+      {{- range .Data.Scopes}}
+      <label><input type="checkbox" name="scope" value="{{.}}"><span><strong>{{.}}</strong> <span class="muted">{{scope .}}</span></span></label>
+      {{- end}}
+    </fieldset>
+    <div class="span form-actions">
+      <button type="submit" class="primary">创建 key</button>
+      <span class="muted">换 key 时先建新的、改好调用方，再吊销旧的。</span>
+    </div>
+  </form>
+</div>
+{{end}}
