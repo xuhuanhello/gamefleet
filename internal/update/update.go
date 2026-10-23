@@ -296,6 +296,21 @@ func (s *Service) Status() (Status, error) {
 	if !s.HasUpdater() {
 		return st, nil
 	}
+	// A request the updater has not taken yet, which it does within two
+	// seconds, counts as started: the console shows it, and takes no other.
+	if data, err := os.ReadFile(filepath.Join(s.o.Dir, "request.json")); err == nil {
+		var req struct {
+			Action, Version string
+			At              time.Time
+		}
+		if json.Unmarshal(data, &req) == nil {
+			st = Status{Action: req.Action, Version: req.Version, State: Downloading, At: req.At}
+			if req.Action == "apply" {
+				st.State = Applying
+			}
+			return st, nil
+		}
+	}
 	data, err := os.ReadFile(filepath.Join(s.o.Dir, "status.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return st, nil

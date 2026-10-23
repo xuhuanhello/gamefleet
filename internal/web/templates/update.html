@@ -12,7 +12,7 @@
 <section class="section">
   <div class="panel versions">
     <dl class="facts">
-      <div><dt>正在运行</dt><dd>{{if $d.Released}}v{{$d.Current}}{{else}}{{$d.Current}} <span class="muted">从源码编译</span>{{end}}</dd></div>
+      <div><dt>正在运行</dt><dd data-running>{{if $d.Released}}v{{$d.Current}}{{else}}{{$d.Current}} <span class="muted">从源码编译</span>{{end}}</dd></div>
       {{- if $d.Released}}
       <div><dt>最新发布</dt><dd>{{with $d.Check.Latest}}<a class="link" href="{{.URL}}" target="_blank" rel="noopener">v{{.Version}}</a>{{if not .Published.IsZero}} <span class="muted">{{.Published.UTC.Format "2006-01-02"}} 发布</span>{{end}}{{else}}<span class="muted">–</span>{{end}}</dd></div>
       <div><dt>上次检查</dt><dd>{{if $d.Check.At.IsZero}}<span class="muted">还没有检查过</span>{{else}}{{age $d.Check.At}}前{{if $d.Check.Err}} <span class="muted">没有成功</span>{{end}}{{end}}</dd></div>
@@ -41,7 +41,9 @@
       <li class="{{.State}}"><span class="mark">{{if eq .State "done"}}{{template "icon-check"}}{{else if eq .State "failed"}}!{{end}}</span><span class="label">{{.Label}}</span></li>
       {{- end}}
     </ol>
-    <div class="progress-detail action">
+    <div class="progress-detail action"{{if .Restarting}} data-await-version="{{$r.Version}}" data-from="{{$d.Current}}"
+      data-ok="已经更新到 v{{$r.Version}}。" data-failed="没有更新成功，GameFleet 回到了 v{{$d.Current}}，登录后在这里看原因。"
+      data-countdown="{n} 秒后刷新页面，之后要重新登录。" data-late="等了 5 分钟 GameFleet 还没回来。刷新页面看看，或者看管理机上的 /opt/gamefleet/update/apply.log。"{{end}}>
       <span class="text">{{.Detail}}</span>
       {{- if .Figure}}<span class="figure">{{.Figure}}</span>{{end}}
       {{- if eq .Action "download"}}
@@ -49,6 +51,8 @@
         <input type="hidden" name="version" value="{{$r.Version}}">
         <button type="submit" class="primary">{{.Label}}</button>
       </form>
+      {{- else if .Restarting}}
+      <button type="button" class="primary" data-reload hidden>现在刷新</button>
       {{- else if eq .Action "apply"}}
       <form action="/settings/update/apply" method="post" data-busy="正在请求…" data-confirm="现在更新到 v{{$r.Version}}？GameFleet 会重启十几秒，之后所有人都要重新登录。">
         <input type="hidden" name="version" value="{{$r.Version}}">

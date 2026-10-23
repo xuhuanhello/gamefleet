@@ -155,6 +155,16 @@ func TestDownloadAndApplyWriteRequests(t *testing.T) {
 		t.Fatal("a request that is not a version was written")
 	}
 
+	// Until the updater takes the request, it counts as started, with no
+	// progress yet, and nothing else is asked.
+	if st, err := s.Status(); err != nil || st.State != Downloading || st.Version != "2.1.0" || st.Total != 0 {
+		t.Fatalf("status before the updater took the request = %+v, %v", st, err)
+	}
+	if err := s.Download("2.1.0"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a second request while the first waits: %v", err)
+	}
+	os.Remove(filepath.Join(dir, "request.json")) // the updater takes it
+
 	// While the updater pulls, nothing else is asked, and progress adds up
 	// each layer: one done, one half way.
 	os.WriteFile(filepath.Join(dir, "status.json"), []byte(`{"action":"download","version":"2.1.0","state":"downloading"}`), 0o644)
@@ -180,6 +190,9 @@ func TestDownloadAndApplyWriteRequests(t *testing.T) {
 	if !strings.Contains(string(data), `"action":"apply"`) {
 		t.Fatalf("request = %s", data)
 	}
+	if st, _ := s.Status(); st.State != Applying || st.Version != "2.1.0" {
+		t.Fatalf("status before the updater took the apply = %+v", st)
+	}
 	backups, _ := os.ReadDir(s.o.BackupDir)
 	if len(backups) != 1 || !strings.HasPrefix(backups[0].Name(), "gamefleet-2.0.0-") {
 		t.Fatalf("backups = %v", backups)
@@ -195,6 +208,7 @@ func TestOnlyFiveBackupsStay(t *testing.T) {
 		if err := s.Apply(context.Background(), "2.1.0"); err != nil {
 			t.Fatal(err)
 		}
+		os.Remove(filepath.Join(dir, "request.json"))
 		os.Chtimes(filepath.Join(s.o.BackupDir, "gamefleet-2.0.0-"+s.now().UTC().Format("20060102-150405")+".db"), s.now(), s.now())
 	}
 	backups, _ := os.ReadDir(s.o.BackupDir)

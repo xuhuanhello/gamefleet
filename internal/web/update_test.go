@@ -154,6 +154,12 @@ func TestUpdatingGameFleetFromTheConsole(t *testing.T) {
 	if page := visible(body); !strings.Contains(page, "正在更新到 v2.1.0，GameFleet 马上重启。") {
 		t.Errorf("applying:\n%s", page)
 	}
+	// The restart ends the session, so the page waits on /healthz rather than
+	// refreshing itself onto the sign-in page.
+	if !strings.Contains(body, `data-await-version="2.1.0" data-from="2.0.0"`) || strings.Contains(body, "data-refresh") ||
+		!strings.Contains(body, "data-reload hidden") {
+		t.Errorf("applying page does not wait for the new version:\n%s", body)
+	}
 
 	// The new version did not start: the line says so, the reason is in the
 	// steps, and it can be tried again.

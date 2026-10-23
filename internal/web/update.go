@@ -68,6 +68,9 @@ type updateSteps struct {
 	Figure      string
 	// Action is the button: download or apply, or none while the updater works.
 	Action, Label string
+	// Restarting is set while the updater puts the new version in place; the
+	// page then waits for it on /healthz.
+	Restarting bool
 }
 
 // updatePage shows the running and latest versions and, when there is a
@@ -92,7 +95,10 @@ func (c *Console) updatePage(w http.ResponseWriter, r *http.Request, p page) {
 	}
 	p.Title = "更新"
 	p.Nav = "settings"
-	if st.Busy() {
+	// While GameFleet restarts, console.js watches /healthz instead: the
+	// restart ends every session, so a refresh would land on the sign-in
+	// page before the page could say how the update went.
+	if st.Busy() && st.State != update.Applying {
 		p.Refresh, p.RefreshSeconds = true, 2
 	}
 	p.Data = d
@@ -160,7 +166,8 @@ func updateStepsTo(v string, st update.Status) *updateSteps {
 		s.Action, s.Label = "apply", "重启并更新"
 	case mine && st.State == update.Applying:
 		download.State, restart.State = "done", "now"
-		s.Detail = "GameFleet 正在重启。好了以后这个页面会跳到登录页，重新登录即可。"
+		s.Restarting = true
+		s.Detail = "GameFleet 正在重启，大约十几秒。好了以后这个页面会告诉你结果，再自动刷新。"
 	case mine && st.State == update.Failed:
 		download.State, restart.State = "done", "failed"
 		s.Detail = sentence(st.Error)

@@ -114,10 +114,62 @@
     }, seconds * 1000);
   }
 
+  // <div data-await-version="2.1.0" data-from="2.0.0"> waits while the
+  // updater restarts GameFleet: it asks /healthz, which needs no session,
+  // until the new version answers, or the old one again after GameFleet was
+  // down, which means the updater went back. Then it says how it went, in
+  // the page's own words (data-ok, data-failed), and reloads after ten seconds.
+  function awaitVersion(el) {
+    const want = el.dataset.awaitVersion, from = el.dataset.from, started = Date.now();
+    let wentDown = false;
+    const text = el.querySelector(".text"), button = el.querySelector("[data-reload]");
+    button.addEventListener("click", () => location.reload());
+    const poll = setInterval(async () => {
+      let version = "";
+      try {
+        const response = await fetch("/healthz", { cache: "no-store" });
+        if (response.ok) version = (await response.json()).version || "";
+      } catch {}
+      if (!version) wentDown = true;
+      if (version === want || (wentDown && version === from)) {
+        clearInterval(poll);
+        done(version === want);
+      } else if (Date.now() - started > 5 * 60 * 1000) {
+        clearInterval(poll);
+        text.textContent = el.dataset.late;
+        button.hidden = false;
+      }
+    }, 2000);
+    function done(ok) {
+      const running = document.querySelector("[data-running]");
+      if (running) running.textContent = "v" + (ok ? want : from);
+      const finding = document.querySelector(".finding");
+      if (finding) {
+        finding.className = "finding " + (ok ? "ok" : "bad");
+        finding.querySelector(".text").textContent = ok ? el.dataset.ok : el.dataset.failed;
+      }
+      const step = el.closest(".progress-card").querySelector("ol.stepper li.now");
+      if (step) {
+        step.className = ok ? "done" : "failed";
+        const check = el.closest(".progress-card").querySelector("ol.stepper li.done .mark");
+        step.querySelector(".mark").innerHTML = ok && check ? check.innerHTML : "!";
+      }
+      button.hidden = false;
+      let left = 10;
+      const tick = () => {
+        if (left === 0) return location.reload();
+        text.textContent = el.dataset.countdown.replace("{n}", left--);
+        setTimeout(tick, 1000);
+      };
+      tick();
+    }
+  }
+
   const start = () => {
     const main = document.querySelector("main");
     if (main) refresh(main);
     addCopyButtons(document);
+    for (const el of document.querySelectorAll("[data-await-version]")) awaitVersion(el);
   };
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", start);
