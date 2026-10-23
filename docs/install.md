@@ -60,7 +60,7 @@ docker run --rm -i --user 0:0 -v "$PWD/credentials:/out" "$(sed -n 's/^GAMEFLEET
 2. 点"下载"：更新器把新版本的镜像拉到管理机上，页面显示进度，这一步不影响正在运行的 GameFleet；
 3. 点"重启并更新"：GameFleet 先把数据库备份到 `backups/`，更新器换上新版本的部署文件，用新镜像重跑安装脚本。GameFleet 停十几秒，之后页面跳到登录页。
 
-这十几秒里，新的对局分配不到战斗服；正在打的对局不受影响。新版本两分钟内没有启动起来，更新器会自动换回原来的版本，并在更新页上写明原因。
+这十几秒里，新的对局分配不到战斗服；正在打的对局不受影响。新版本 3 分钟内没有启动起来，更新器会自动换回原来的版本，并在更新页上写明原因。
 
 GameFleet 每 6 小时检查一次 GitHub 上的新版本，打开更新页时也会再检查一次。检查只发给 `api.github.com`，不带任何你的数据。
 
@@ -88,16 +88,24 @@ sh install.sh --domain fleet.example.com --email 你的邮箱
 | 配置 | `/opt/gamefleet/private/config.json` | 控制台账号没了，重新运行安装脚本会新建一个 |
 | 镜像仓库 | Docker 卷 `gamefleet_registry_data` | 已登记的构建拉不到镜像，要让 CI 重新推 |
 
-在线更新前，GameFleet 自动把数据库备份到同一个卷里的 `backups/`，保留最近 5 份。手动备份：
+在线更新前，GameFleet 自动把数据库备份到同一个卷里的 `backups/gamefleet-旧版本-时间.db`，保留最近 5 份。
+
+**手动备份：** GameFleet 要停几秒，拷出来的文件才完整。这几秒里新的对局分配不到战斗服，正在打的对局不受影响。
 
 ```sh
-cd /opt/gamefleet
-docker compose stop gamefleet
-docker compose cp gamefleet:/var/lib/gamefleet/. backup/
-docker compose start gamefleet
+cd /opt/gamefleet && umask 077 && d=backup/$(date +%Y%m%d-%H%M%S) && mkdir -p $d &&
+  docker compose stop gamefleet && docker compose cp gamefleet:/var/lib/gamefleet/. $d/; docker compose start gamefleet
 ```
 
-恢复时停掉 GameFleet，把备份的 `gamefleet.db` 拷回卷里，再启动。
+**恢复：** 停掉 GameFleet，删掉数据库旁边的两个临时文件（`-wal`、`-shm`，不删的话 SQLite 会把它们套到恢复的数据库上），再把备份放回卷里，属主改成 GameFleet 的用户（65532）：
+
+```sh
+cd /opt/gamefleet && v=$(docker volume inspect -f "{{.Mountpoint}}" gamefleet_gamefleet_data) &&
+  docker compose stop gamefleet && rm -f $v/gamefleet.db-wal $v/gamefleet.db-shm &&
+  install -o 65532 -g 65532 -m 644 备份的文件 $v/gamefleet.db && docker compose start gamefleet
+```
+
+备份之后才做的改动（新构建、新部署、新的 key）都没有了。集群里多出来的部署，GameFleet 当作不认识的部署处理：等上面的对局打完就删掉。
 
 ## 管理机上的文件
 
