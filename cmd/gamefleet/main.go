@@ -151,7 +151,6 @@ func run(configPath string, log *slog.Logger) error {
 	go func() { served <- server.ListenAndServe() }()
 	go releases.Run(ctx)
 	go fleets.Run(ctx)
-	go updates.Run(ctx)
 	log.Info("gamefleet listening", "version", buildinfo.Version, "addr", cfg.Listen, "clusters", len(dir.All()), "users", len(cfg.Users))
 
 	select {

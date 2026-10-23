@@ -62,7 +62,7 @@ func (t Target) Check() (Target, error) {
 		return t, fail("登录用户名不对")
 	}
 	if t.Password == "" && strings.TrimSpace(t.Key) == "" {
-		return t, fail("请填 root 密码或者私钥")
+		return t, fail("请填密码或者私钥")
 	}
 	if _, err := t.auth(); err != nil {
 		return t, err

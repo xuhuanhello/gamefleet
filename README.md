@@ -82,6 +82,7 @@ GameFleet 用你自己租的 VPS 跑战斗服（专用游戏服务器）：把�
 ```sh
 go test ./...
 go run ./cmd/console-preview    # 用编造的数据在 http://127.0.0.1:8091 打开控制台，已经登录
+go run ./cmd/console-preview -update latest   # 更新页的其他状态：available、downloaded、apply-failed……
 go build -o bin/gamefleet ./cmd/gamefleet
 ```
 

@@ -85,25 +85,26 @@ func New(o Options) (*Console, error) {
 	c := &Console{host: o.Host, sites: o.Sites, clusters: o.Clusters, auth: o.Auth, apiKeys: o.Keys, store: o.Store, releases: o.Releases, log: o.Log, updates: o.Updates,
 		now: time.Now, pages: map[string]*template.Template{}}
 	funcs := template.FuncMap{
-		"age":         c.age,
-		"breakable":   breakable,
-		"shown":       shown,
-		"newest":      newest,
-		"tag":         imageTag,
-		"join":        strings.Join,
-		"state":       stateClass,
-		"stateLabel":  stateLabel,
-		"cpu":         formatCPU,
-		"memory":      formatMemory,
-		"initial":     func(s string) string { return strings.ToUpper(s[:min(len(s), 1)]) },
-		"short":       shortDigest,
-		"revision":    func(b store.Build) string { return shortRevision(b.Labels["org.opencontainers.image.revision"]) },
-		"deployState": deployState,
-		"channel":     channelLabel,
-		"action":      actionLabel,
-		"scope":       scopeLabel,
-		"has":         func(list []string, s string) bool { return slices.Contains(list, s) },
-		"until":       c.until,
+		"age":          c.age,
+		"breakable":    breakable,
+		"releaseNotes": releaseNotes,
+		"shown":        shown,
+		"newest":       newest,
+		"tag":          imageTag,
+		"join":         strings.Join,
+		"state":        stateClass,
+		"stateLabel":   stateLabel,
+		"cpu":          formatCPU,
+		"memory":       formatMemory,
+		"initial":      func(s string) string { return strings.ToUpper(s[:min(len(s), 1)]) },
+		"short":        shortDigest,
+		"revision":     func(b store.Build) string { return shortRevision(b.Labels["org.opencontainers.image.revision"]) },
+		"deployState":  deployState,
+		"channel":      channelLabel,
+		"action":       actionLabel,
+		"scope":        scopeLabel,
+		"has":          func(list []string, s string) bool { return slices.Contains(list, s) },
+		"until":        c.until,
 	}
 	for _, name := range []string{"login", "message", "refused", "overview", "cluster", "node", "servers", "server", "log", "events",
 		"builds", "build", "routes", "keys", "audit", "join", "runtime", "nodejob", "addnode", "update"} {
@@ -212,6 +213,9 @@ func (c *Console) signedIn(h pageHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie(SessionCookie); err == nil {
 			if user, ok := c.auth.User(cookie.Value); ok {
+				if r.Method == http.MethodGet && !quietRefresh(r) && r.URL.Path != "/settings/update" {
+					c.updates.CheckSoon(pageCheckAge)
+				}
 				p := page{User: user, Version: c.updates.Current(), Update: c.updates.Available()}
 				for _, s := range c.sites.All() {
 					p.Clusters = append(p.Clusters, s.Name)

@@ -28,7 +28,8 @@
         <td>{{range .Scopes}}<span class="pill plain" title="{{scope .}}">{{.}}</span> {{end}}</td>
         <td class="two">{{age .Created}}前<div class="sub">{{.CreatedBy}}</div></td>
         <td class="num">
-          <form action="/settings/keys/{{.Name}}/revoke" method="post" data-confirm="吊销 {{.Name}}？用它的调用方会马上被拒绝。">
+          {{- $cluster := index $.Data.PullKeys .Name}}
+          <form action="/settings/keys/{{.Name}}/revoke" method="post" data-confirm="{{if $cluster}}吊销 {{.Name}}？这是集群 {{$cluster}} 拉镜像用的 key：吊销以后，{{$cluster}} 上新开的战斗服拉不到镜像，起不来。{{else}}吊销 {{.Name}}？用它的调用方会马上被拒绝。{{end}}">
             <button type="submit" class="quiet">吊销</button>
           </form>
         </td>

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,7 +41,11 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8091", "loopback address to listen on")
+	updateState := flag.String("update", "downloading", "what the update page shows: "+strings.Join(previewUpdateStates, ", "))
 	flag.Parse()
+	if !slices.Contains(previewUpdateStates, *updateState) {
+		log.Fatalf("-update must be one of %s", strings.Join(previewUpdateStates, ", "))
+	}
 	host, _, err := net.SplitHostPort(*addr)
 	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
 		log.Fatalf("-addr must be a loopback address, got %q", *addr)
@@ -81,7 +87,7 @@ func main() {
 	}
 	console, err := web.New(web.Options{
 		Host: "fleet.example.com", Sites: directory, Clusters: fleets, Auth: users, Keys: keys,
-		Store: db, Releases: releases, Updates: previewUpdates{}, Log: logger,
+		Store: db, Releases: releases, Updates: previewUpdates{*updateState}, Log: logger,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -356,8 +362,13 @@ func fakeCluster(now time.Time) *clustertest.Fake {
 	return fake
 }
 
-// previewUpdates is a GameFleet one release behind, downloading the next.
-type previewUpdates struct{}
+// previewUpdateStates are the states of the update page the preview can show.
+var previewUpdateStates = []string{"latest", "applied", "check-failed", "available", "downloading", "download-failed",
+	"downloaded", "applying", "apply-failed", "no-updater", "dev"}
+
+// previewUpdates is GameFleet in one of previewUpdateStates; in most of them
+// it is v2.0.0 with v2.1.0 out.
+type previewUpdates struct{ state string }
 
 var previewRelease = &update.Release{
 	Version: "2.1.0", Name: "GameFleet v2.1.0", URL: "https://github.com/xuhuanhello/gamefleet/releases/tag/v2.1.0",
@@ -365,15 +376,54 @@ var previewRelease = &update.Release{
 	Notes:     "- 路由页可以停止服务一个联机版本，旧客户端会被提示更新\n- 总览里每个构建下面写着它的联机版本\n- 修复：晋升以后测试账号仍被隔离在灰度通道",
 }
 
-func (previewUpdates) Current() string                     { return "2.0.0" }
-func (previewUpdates) Released() bool                      { return true }
-func (previewUpdates) HasUpdater() bool                    { return true }
-func (previewUpdates) Available() *update.Release          { return previewRelease }
-func (previewUpdates) Download(string) error               { return nil }
-func (previewUpdates) Apply(context.Context, string) error { return nil }
-func (previewUpdates) Latest(context.Context, bool) (*update.Release, error) {
-	return previewRelease, nil
+func (u previewUpdates) Current() string {
+	switch u.state {
+	case "dev":
+		return "dev"
+	case "latest", "applied", "check-failed":
+		return "2.1.0"
+	}
+	return "2.0.0"
 }
-func (previewUpdates) Status() (update.Status, error) {
-	return update.Status{Action: "download", Version: "2.1.0", State: update.Downloading, Done: 31 << 20, Total: 50 << 20}, nil
+func (u previewUpdates) Released() bool                                    { return u.state != "dev" }
+func (u previewUpdates) HasUpdater() bool                                  { return u.state != "no-updater" }
+func (previewUpdates) Download(string) error                               { return nil }
+func (previewUpdates) Apply(context.Context, string) error                 { return nil }
+func (previewUpdates) CheckSoon(time.Duration)                             {}
+func (u previewUpdates) Check(context.Context, time.Duration) update.Check { return u.Checked() }
+func (u previewUpdates) Checked() update.Check {
+	switch u.state {
+	case "dev":
+		return update.Check{}
+	case "check-failed":
+		return update.Check{Latest: previewRelease, At: time.Now().Add(-3 * time.Second), Err: errors.New("连不上 GitHub")}
+	}
+	return update.Check{Latest: previewRelease, At: time.Now().Add(-3 * time.Second)}
+}
+func (u previewUpdates) Available() *update.Release {
+	if update.Newer(previewRelease.Version, u.Current()) {
+		return previewRelease
+	}
+	return nil
+}
+func (u previewUpdates) Status() (update.Status, error) {
+	at := time.Now().Add(-time.Minute)
+	st := update.Status{Action: "download", Version: "2.1.0", At: at}
+	switch u.state {
+	case "downloading":
+		st.State, st.Done, st.Total = update.Downloading, 31<<20, 50<<20
+	case "download-failed":
+		st.State, st.Error = update.Failed, "镜像没下载下来，原因在管理机的 /opt/gamefleet/update/pull.jsonl 里"
+	case "downloaded":
+		st.State = update.Downloaded
+	case "applying":
+		st.Action, st.State = "apply", update.Applying
+	case "apply-failed":
+		st.Action, st.State, st.Error = "apply", update.Failed, "新版本没有启动起来，已经回到原来的版本。经过见管理机的 /opt/gamefleet/update/apply.log"
+	case "applied":
+		st.Action, st.State = "apply", update.Applied
+	default:
+		return update.Status{}, nil
+	}
+	return st, nil
 }

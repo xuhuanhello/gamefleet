@@ -100,7 +100,7 @@
 {{define "machineFields"}}
 <label>机器 IP<input name="host" value="{{.Host}}" placeholder="例如 203.0.113.30" inputmode="decimal" required></label>
 <label>登录用户<input name="user" value="{{if .User}}{{.User}}{{else}}root{{end}}" autocomplete="off" required></label>
-<label class="span">root 密码<input type="password" name="password" autocomplete="new-password" placeholder="和私钥二选一"></label>
+<label class="span">密码<input type="password" name="password" autocomplete="new-password" placeholder="登录用户的密码，和私钥二选一"></label>
 <label class="span">或者私钥<textarea name="key" rows="4" autocomplete="off" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
 <label class="span">私钥密码<input type="password" name="passphrase" autocomplete="new-password" placeholder="私钥没有密码就留空"></label>
 {{end}}

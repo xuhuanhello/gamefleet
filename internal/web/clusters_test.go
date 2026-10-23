@@ -155,7 +155,7 @@ func TestInstallAClusterOverSSHFromTheConsole(t *testing.T) {
 		return "SHA256:abcdef", &remote.Error{Text: "命令在机器上失败了（退出码 1），原因见日志", Status: 1}
 	})
 	resp, body := e.post(t, "/clusters/new", url.Values{"name": {"sg-1"}, "region": {"sg"}, "host": {"203.0.113.7"}, "user": {"root"}})
-	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(visible(body), "请填 root 密码或者私钥") ||
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(visible(body), "请填密码或者私钥") ||
 		!strings.Contains(body, `value="203.0.113.7"`) {
 		t.Fatalf("no password: %d\n%s", resp.StatusCode, visible(body))
 	}

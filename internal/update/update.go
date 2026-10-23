@@ -30,14 +30,6 @@ import (
 	"time"
 )
 
-const (
-	// CheckInterval is how often GameFleet asks GitHub for the latest release.
-	CheckInterval = 6 * time.Hour
-	// refreshAfter limits checks that people ask for, such as opening the
-	// update page, to one a minute: GitHub allows 60 an hour.
-	refreshAfter = time.Minute
-)
-
 // States of the updater, as status.json reports them.
 const (
 	Downloading = "downloading"
@@ -63,6 +55,16 @@ type Release struct {
 	Notes     string
 	URL       string // its page on GitHub
 	Published time.Time
+}
+
+// Check is what asking GitHub for the latest release found.
+type Check struct {
+	// Latest is the latest release found so far, nil until GitHub answered.
+	Latest *Release
+	// At is when GitHub was last asked, zero if it never was.
+	At time.Time
+	// Err is why the last time failed, nil if it worked.
+	Err error
 }
 
 // Status is how the updater's last request went.
@@ -110,16 +112,19 @@ type Service struct {
 	o   Options
 	now func() time.Time
 
-	mu      sync.Mutex
-	latest  *Release
-	err     error
-	checked time.Time
+	mu       sync.Mutex
+	last     Check
+	checking bool // a CheckSoon is running
 }
 
-// New makes the service. It checks nothing until Run or Latest is called.
+// New makes the service. GameFleet asks GitHub only when someone uses the
+// console (see Check and CheckSoon), never on its own.
 func New(o Options) *Service {
 	if o.API == "" {
 		o.API = "https://api.github.com"
+	}
+	if o.Log == nil {
+		o.Log = slog.New(slog.DiscardHandler)
 	}
 	if o.Client == nil {
 		o.Client = &http.Client{Timeout: 10 * time.Second}
@@ -137,56 +142,96 @@ func (s *Service) Released() bool { return version.MatchString(s.o.Current) }
 // HasUpdater reports whether the updater can download and apply releases.
 func (s *Service) HasUpdater() bool { return s.o.Dir != "" }
 
-// Run checks for a new release now and every CheckInterval until ctx ends.
-func (s *Service) Run(ctx context.Context) {
-	if s.o.Repository == "" || !s.Released() {
-		return
-	}
-	ticker := time.NewTicker(CheckInterval)
-	defer ticker.Stop()
-	for {
-		if _, err := s.Latest(ctx, true); err != nil {
-			s.o.Log.Warn("update check failed", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
 // Available is the latest release when it is newer than the running
 // version, as of the last check; it asks nothing.
 func (s *Service) Available() *Release {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.latest == nil || !Newer(s.latest.Version, s.o.Current) {
+	if s.last.Latest == nil || !Newer(s.last.Latest.Version, s.o.Current) {
 		return nil
 	}
-	return s.latest
+	return s.last.Latest
 }
 
-// Latest returns the latest release. It asks GitHub again when refresh is
-// set and the last check is more than a minute old.
-func (s *Service) Latest(ctx context.Context, refresh bool) (*Release, error) {
-	s.mu.Lock()
-	stale := s.checked.IsZero() || refresh && s.now().Sub(s.checked) >= refreshAfter
-	s.mu.Unlock()
-	if !stale || s.o.Repository == "" {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return s.latest, s.err
-	}
-	r, err := s.fetch(ctx)
+// Checked is the last check; it asks nothing.
+func (s *Service) Checked() Check {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.checked = s.now()
-	s.err = err
-	if err == nil {
-		s.latest = r
+	return s.last
+}
+
+func (s *Service) checks() bool { return s.o.Repository != "" && s.Released() }
+
+// Check asks GitHub for the latest release, unless it was asked less than
+// maxAge ago. A build from source never asks.
+func (s *Service) Check(ctx context.Context, maxAge time.Duration) Check {
+	if !s.checks() {
+		return Check{}
 	}
-	return s.latest, s.err
+	s.mu.Lock()
+	c := s.last
+	s.mu.Unlock()
+	if !c.At.IsZero() && s.now().Sub(c.At) < maxAge {
+		return c
+	}
+	r, err := s.fetch(ctx)
+	if err != nil {
+		s.o.Log.Warn("update check failed", "error", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last.At, s.last.Err = s.now(), err
+	if err == nil {
+		s.last.Latest = r
+	}
+	return s.last
+}
+
+// CheckSoon checks in the background when the last check is more than
+// maxAge old, so that a page can show a new release without waiting for
+// GitHub.
+func (s *Service) CheckSoon(maxAge time.Duration) {
+	if !s.checks() {
+		return
+	}
+	s.mu.Lock()
+	due := !s.checking && (s.last.At.IsZero() || s.now().Sub(s.last.At) >= maxAge)
+	s.checking = s.checking || due
+	s.mu.Unlock()
+	if !due {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		s.Check(ctx, maxAge)
+		s.mu.Lock()
+		s.checking = false
+		s.mu.Unlock()
+	}()
+}
+
+// checkError is why a check failed, in words for the console; err is the
+// detail for the log.
+type checkError struct {
+	text string
+	err  error
+}
+
+func (e *checkError) Error() string {
+	if e.err == nil {
+		return e.text
+	}
+	return e.text + ": " + e.err.Error()
+}
+
+// Reason is the part of a failed check to show people.
+func Reason(err error) string {
+	var ce *checkError
+	if errors.As(err, &ce) {
+		return ce.text
+	}
+	return err.Error()
 }
 
 func (s *Service) fetch(ctx context.Context) (*Release, error) {
@@ -198,11 +243,17 @@ func (s *Service) fetch(ctx context.Context) (*Release, error) {
 	req.Header.Set("User-Agent", "gamefleet/"+s.o.Current)
 	resp, err := s.o.Client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &checkError{"连不上 GitHub", err}
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub answered %d", resp.StatusCode)
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusForbidden, http.StatusTooManyRequests:
+		return nil, &checkError{"GitHub 暂时不回答这台机器（每小时最多 60 次），过一会儿再试", nil}
+	case http.StatusNotFound:
+		return nil, &checkError{"GitHub 上还没有发布过版本", nil}
+	default:
+		return nil, &checkError{fmt.Sprintf("GitHub 返回了 %d", resp.StatusCode), nil}
 	}
 	var body struct {
 		TagName     string    `json:"tag_name"`
@@ -212,11 +263,10 @@ func (s *Service) fetch(ctx context.Context) (*Release, error) {
 		PublishedAt time.Time `json:"published_at"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return nil, err
+		return nil, &checkError{"读不懂 GitHub 的回答", err}
 	}
-	m := version.FindStringSubmatch(body.TagName)
-	if m == nil {
-		return nil, fmt.Errorf("the latest release %q has no version", body.TagName)
+	if !version.MatchString(body.TagName) {
+		return nil, &checkError{fmt.Sprintf("GitHub 上最新的发布 %q 不是版本号", body.TagName), nil}
 	}
 	return &Release{Version: strings.TrimPrefix(body.TagName, "v"), Name: body.Name, Notes: body.Body,
 		URL: body.HTMLURL, Published: body.PublishedAt}, nil

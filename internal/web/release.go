@@ -486,6 +486,8 @@ func routesFinding(rows []routeRow) finding {
 type keysPage struct {
 	Keys   []store.Key
 	Scopes []string
+	// PullKeys names the cluster each cluster's own pull key belongs to.
+	PullKeys map[string]string
 	// NewName and NewKey show a key that was just made, once.
 	NewName, NewKey string
 	Err             string
@@ -503,6 +505,10 @@ func (c *Console) renderKeys(w http.ResponseWriter, r *http.Request, p page, sta
 	}
 	data.Keys = keys
 	data.Scopes = auth.Scopes
+	data.PullKeys = map[string]string{}
+	for _, s := range c.sites.All() {
+		data.PullKeys["pull-"+s.Name] = s.Name
+	}
 	p.Title = "API key"
 	p.Nav = "settings"
 	p.Data = data

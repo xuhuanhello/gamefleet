@@ -55,37 +55,89 @@ func newService(t *testing.T, current, api string) (*Service, string) {
 	return s, filepath.Join(dir, "update")
 }
 
-func TestLatestAndAvailable(t *testing.T) {
+func (s *Service) busyChecking() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checking
+}
+
+func TestChecks(t *testing.T) {
 	calls := 0
 	gh := fakeGitHub(t, "v2.1.0", &calls)
 	s, _ := newService(t, "2.0.0", gh.URL)
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
-	if s.Available() != nil {
-		t.Fatal("available before any check")
+	if s.Available() != nil || !s.Checked().At.IsZero() || calls != 0 {
+		t.Fatal("GitHub asked before anyone used the console")
 	}
-	r, err := s.Latest(context.Background(), false)
-	if err != nil || r.Version != "2.1.0" || !strings.HasSuffix(r.URL, "/v2.1.0") {
-		t.Fatalf("latest = %+v, %v", r, err)
+	c := s.Check(context.Background(), time.Minute)
+	if c.Err != nil || c.Latest.Version != "2.1.0" || !strings.HasSuffix(c.Latest.URL, "/v2.1.0") || !c.At.Equal(now) {
+		t.Fatalf("check = %+v", c)
 	}
 	if a := s.Available(); a == nil || a.Version != "2.1.0" {
 		t.Fatalf("available = %+v", a)
 	}
-	// Asking again within a minute does not reach GitHub.
-	s.Latest(context.Background(), true)
+	// A check younger than maxAge is reused; zero always asks.
+	s.Check(context.Background(), time.Minute)
 	if calls != 1 {
 		t.Fatalf("GitHub asked %d times", calls)
 	}
-	now = now.Add(time.Minute)
-	s.Latest(context.Background(), true)
+	s.Check(context.Background(), 0)
 	if calls != 2 {
-		t.Fatalf("GitHub asked %d times after a minute", calls)
+		t.Fatalf("GitHub asked %d times with maxAge 0", calls)
+	}
+
+	// In the background, one check at a time.
+	now = now.Add(2 * time.Hour)
+	s.CheckSoon(time.Hour)
+	s.CheckSoon(time.Hour)
+	for deadline := time.Now().Add(5 * time.Second); s.Checked().At.Equal(now.Add(-2*time.Hour)) || s.busyChecking(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the background check never finished")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if calls != 3 {
+		t.Fatalf("GitHub asked %d times after two CheckSoon", calls)
 	}
 
 	current, _ := newService(t, "2.1.0", gh.URL)
-	current.Latest(context.Background(), false)
+	current.Check(context.Background(), 0)
 	if current.Available() != nil {
 		t.Fatal("the running version offered as an update")
+	}
+	dev, _ := newService(t, "dev", gh.URL)
+	dev.Check(context.Background(), 0)
+	dev.CheckSoon(0)
+	if calls != 4 {
+		t.Fatalf("a build from source asked GitHub (%d calls)", calls)
+	}
+}
+
+func TestFailedChecksSayWhy(t *testing.T) {
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(limited.Close)
+	s, _ := newService(t, "2.0.0", limited.URL)
+	c := s.Check(context.Background(), 0)
+	if c.Err == nil || c.Latest != nil || !strings.Contains(Reason(c.Err), "每小时最多 60 次") {
+		t.Fatalf("rate limited: %+v", c)
+	}
+	limited.Close()
+	c = s.Check(context.Background(), 0)
+	if Reason(c.Err) != "连不上 GitHub" || !strings.Contains(c.Err.Error(), "连不上 GitHub: ") {
+		t.Fatalf("unreachable: %v", c.Err)
+	}
+
+	// A failure keeps what an earlier check found.
+	calls := 0
+	gh := fakeGitHub(t, "v2.1.0", &calls)
+	s, _ = newService(t, "2.0.0", gh.URL)
+	s.Check(context.Background(), 0)
+	gh.Close()
+	if c := s.Check(context.Background(), 0); c.Err == nil || c.Latest == nil || c.Latest.Version != "2.1.0" {
+		t.Fatalf("after a failure: %+v", c)
 	}
 }
 

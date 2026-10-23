@@ -37,10 +37,30 @@
     }
   }
 
-  // <form data-confirm="question"> asks before it submits.
+  // <form data-confirm="question"> asks before it submits, and
+  // <form data-busy="text"> shows the text on its button while the next page
+  // loads.
   document.addEventListener("submit", (event) => {
-    const question = event.target.dataset && event.target.dataset.confirm;
-    if (question && !confirm(question)) event.preventDefault();
+    const form = event.target;
+    const question = form.dataset && form.dataset.confirm;
+    if (question && !confirm(question)) {
+      event.preventDefault();
+      return;
+    }
+    const button = event.submitter;
+    if (form.dataset && form.dataset.busy && button) {
+      button.dataset.label = button.textContent;
+      button.textContent = form.dataset.busy;
+      button.disabled = true;
+    }
+  });
+  // Coming back to a page from the history gives busy buttons their label back.
+  addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    for (const button of document.querySelectorAll("button[data-label]")) {
+      button.textContent = button.dataset.label;
+      button.disabled = false;
+    }
   });
 
   // edited reports whether a form field in root differs from what the page loaded with.
@@ -66,7 +86,7 @@
           (active && main.contains(active) && active.matches("input, select, textarea"))) return;
       let response;
       try {
-        response = await fetch(location.href, { credentials: "same-origin" });
+        response = await fetch(location.href, { credentials: "same-origin", headers: { "X-GameFleet-Refresh": "1" } });
       } catch {
         return;
       }
@@ -83,7 +103,11 @@
         addCopyButtons(main);
       };
       if (document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        document.startViewTransition(swap);
+        // A transition the browser skips still swaps the content; its
+        // promises only report the skip.
+        const transition = document.startViewTransition(swap);
+        transition.ready.catch(() => {});
+        transition.finished.catch(() => {});
       } else {
         swap();
       }
