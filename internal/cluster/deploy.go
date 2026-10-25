@@ -134,9 +134,10 @@ func (c *Client) CreateFleet(ctx context.Context, f FleetSpec) error {
 							"nodeSelector":     map[string]string{LabelPool: "game"},
 							"imagePullSecrets": []any{map[string]string{"name": PullSecretName}},
 							"containers": []any{map[string]any{
-								"name":    f.Game,
-								"image":   f.Image,
-								"envFrom": []any{map[string]any{"secretRef": map[string]string{"name": f.Game + RuntimeSecretSuffix}}},
+								"name":  f.Game,
+								"image": f.Image,
+								// Optional: a game with no runtime settings has no Secret.
+								"envFrom": []any{map[string]any{"secretRef": map[string]any{"name": f.Game + RuntimeSecretSuffix, "optional": true}}},
 								"resources": map[string]any{
 									"requests": resources(f.CPURequest, f.MemoryRequest),
 									"limits":   resources(f.CPULimit, f.MemoryLimit),

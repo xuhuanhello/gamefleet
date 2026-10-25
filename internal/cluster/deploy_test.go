@@ -62,7 +62,10 @@ func TestCreateFleetSendsTheDeployment(t *testing.T) {
 								Name    string `json:"name"`
 								Image   string `json:"image"`
 								EnvFrom []struct {
-									SecretRef struct{ Name string } `json:"secretRef"`
+									SecretRef struct {
+										Name     string
+										Optional bool
+									} `json:"secretRef"`
 								} `json:"envFrom"`
 								Resources struct {
 									Requests map[string]string `json:"requests"`
@@ -90,6 +93,8 @@ func TestCreateFleetSendsTheDeployment(t *testing.T) {
 		t.Errorf("ports = %+v", fleet.Spec.Template.Spec.Ports)
 	case c.Name != "billiards" || c.Image != spec.Image || c.EnvFrom[0].SecretRef.Name != "billiards-runtime":
 		t.Errorf("container = %+v", c)
+	case !c.EnvFrom[0].SecretRef.Optional:
+		t.Errorf("a game with no runtime settings has no runtime Secret, and its game servers would never start: %+v", c.EnvFrom)
 	case pod.ImagePullSecrets[0].Name != PullSecretName:
 		t.Errorf("pull secrets = %+v", pod.ImagePullSecrets)
 	case pod.NodeSelector[LabelPool] != "game":
