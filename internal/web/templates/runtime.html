@@ -30,14 +30,14 @@
   </table>
 </div>
 {{- else}}
-<div class="panel"><p class="hint">还没有运行时配置。战斗服需要的变量（Nakama 地址、上报结果用的 key、验票公钥）在下面填。</p></div>
+<div class="panel"><p class="hint">还没有运行时配置。战斗服需要的设置（比如游戏后端的地址和密钥）在下面填；不需要就不用填。</p></div>
 {{- end}}
 <div class="panel">
   <div class="panel-head"><h2>设置一个变量</h2></div>
   <form class="form-grid narrow" action="/settings/runtime" method="post">
     <label>游戏<input name="game" list="games" value="{{with .Data.Known}}{{index . 0}}{{end}}" required></label>
     <datalist id="games">{{range .Data.Known}}<option value="{{.}}">{{end}}</datalist>
-    <label>变量名<input name="name" placeholder="例如 NAKAMA_URL" pattern="[A-Z_][A-Z0-9_]*" required></label>
+    <label>变量名<input name="name" placeholder="例如 BACKEND_URL" pattern="[A-Z_][A-Z0-9_]*" required></label>
     <label class="span">值<textarea name="value" rows="3" autocomplete="off" spellcheck="false"></textarea></label>
     <div class="span form-actions">
       <button type="submit" class="primary">保存</button>

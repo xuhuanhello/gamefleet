@@ -1,6 +1,5 @@
 // Package clusters adds clusters to GameFleet, retires their machines and
-// keeps the Secrets game servers need in every cluster. See section 8.6 of
-// the v2 design.
+// keeps the Secrets game servers need in every cluster. See docs/clusters.md.
 //
 // A new cluster joins in three moves: the console makes a join code, the
 // install script run on the new machine reports its progress with that code,
@@ -549,7 +548,7 @@ func SaveVar(ctx context.Context, db *store.Store, game, key, value, actor strin
 		return refuse("游戏名只能用小写字母、数字和横线")
 	}
 	if !varName.MatchString(key) {
-		return refuse("变量名只能用大写字母、数字和下划线，例如 NAKAMA_URL")
+		return refuse("变量名只能用大写字母、数字和下划线，例如 BACKEND_URL")
 	}
 	if len(value) > 16<<10 {
 		return refuse("值太长")

@@ -344,7 +344,7 @@ func TestFindTheMachineOfAMatch(t *testing.T) {
 	}
 
 	_, body = e.get(t, "/servers?q=no-such-match")
-	contains(t, body, "已结束的对局请到 Nakama 查结果")
+	contains(t, body, "已结束的对局请到你的游戏后端查结果")
 
 	_, body = e.get(t, "/servers")
 	if strings.Index(body, "billiards-a") > strings.Index(body, "billiards-b") {

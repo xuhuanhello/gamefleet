@@ -928,7 +928,7 @@ func (c *Console) server(w http.ResponseWriter, r *http.Request, p page) {
 	}
 	if room == nil {
 		c.message(w, http.StatusNotFound, p, "找不到",
-			"没有这个战斗服。对局结束后战斗服会被删除，已结束的对局请到 Nakama 查结果。")
+			"没有这个战斗服。对局结束后战斗服会被删除，已结束的对局请到你的游戏后端查结果。")
 		return
 	}
 	ns := s.Cluster.Namespace()

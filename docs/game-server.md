@@ -54,6 +54,8 @@ GM 工具可以调用 GameFleet 的 `POST /api/v1/matches/{matchId}/end`，提�
 2. 按"这局作废"把结果交给你的游戏后端；
 3. 和正常结束一样，从 `rooms` 里删掉 matchId。
 
+这一节是可选的。不处理这条注解的战斗服，结束请求不起作用：接口照样返回 `202`，这一局照常打完。要强制结束，只能用 `DELETE /api/v1/rooms/{名字}` 删掉整个战斗服，上面的对局都会没了。
+
 ## GameFleet 写在 GameServer 上的信息
 
 | 键 | 类型 | 内容 |

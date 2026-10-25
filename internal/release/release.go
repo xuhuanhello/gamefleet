@@ -1,6 +1,5 @@
 // Package release turns registered builds into running game servers and
-// decides which build new matches get. See section 8.2 of the v2 design:
-// every build runs as its own Fleet, and switching versions only changes a
+// decides which build new matches get (docs/releases.md): every build runs as its own Fleet, and switching versions only changes a
 // route. A deployment no route uses any more drains to zero and is deleted
 // once its last match ends and the retention time has passed.
 package release
@@ -21,13 +20,14 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/store"
 )
 
-// Channels. Nakama puts testers on canary and everyone else on stable.
+// Channels. The matchmaker picks one per match: canary for testers, stable
+// for everyone else.
 const (
 	Stable = "stable"
 	Canary = "canary"
 )
 
-// Labels a build must carry, see section 9.2 of the v2 design.
+// Labels a build must carry, see docs/game-server.md.
 const (
 	LabelCompat   = "io.gamefleet.compat"
 	LabelRevision = "org.opencontainers.image.revision"
@@ -47,7 +47,7 @@ var (
 	ErrNoRoute = errors.New("route_not_found")
 )
 
-// compatValue is what Nakama accepts as a compat version in matchmaking.
+// compatValue is what a compat version may look like.
 var compatValue = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // Defaults for a game's first deployment in a cluster. Later deployments

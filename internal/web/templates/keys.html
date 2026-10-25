@@ -44,7 +44,7 @@
 <div class="panel">
   <div class="panel-head"><h2>新建 key</h2></div>
   <form class="form-grid narrow" action="/settings/keys" method="post">
-    <label class="span">名称<input name="name" placeholder="例如 nakama-2" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="63" required></label>
+    <label class="span">名称<input name="name" placeholder="例如 matchmaker" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="63" required></label>
     <fieldset class="span checks">
       <legend>权限</legend>
       {{- range .Data.Scopes}}

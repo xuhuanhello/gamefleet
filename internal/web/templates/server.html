@@ -25,19 +25,21 @@
   <div class="panel">
     <div class="scroll">
     <table>
-      <thead><tr><th>matchId</th><th>开局</th><th>通道</th><th>席位 0 · Nakama userId</th><th>席位 1 · Nakama userId</th></tr></thead>
+      <thead><tr><th>matchId</th><th>开局</th><th>通道</th><th>玩家</th></tr></thead>
       <tbody>
       {{- range .Data.Matches}}
         <tr>
           <td class="two"><span class="mono" data-copy="{{.ID}}">{{.ID}}</span><div class="sub mono">{{or .Compat "–"}}</div></td>
           <td>{{if .Allocated.IsZero}}<span class="muted">–</span>{{else}}{{age .Allocated}}前{{end}}</td>
           <td>{{or .Channel "–"}}</td>
+          <td class="two">
           {{- range .Players}}
-          <td><span class="mono" data-copy="{{.UserID}}">{{.UserID}}</span></td>
+            <div><span class="muted">席位 {{.Seat}}</span> <span class="mono" data-copy="{{.UserID}}">{{.UserID}}</span></div>
           {{- end}}
+          </td>
         </tr>
       {{- else}}
-        <tr><td colspan="5" class="empty">还没有分配对局。</td></tr>
+        <tr><td colspan="4" class="empty">还没有分配对局。</td></tr>
       {{- end}}
       </tbody>
     </table>

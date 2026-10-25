@@ -14,7 +14,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/store"
 )
 
-// Scopes an API key can carry, see section 9.1 of the v2 design.
+// Scopes an API key can carry, see docs/api.md.
 const (
 	// ScopePush lets CI push images and register builds. It can pull too.
 	ScopePush = "push"

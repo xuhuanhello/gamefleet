@@ -25,7 +25,7 @@ var (
 	ErrDuplicate = errors.New("already exists")
 )
 
-// Deployment states, see section 8.2 of the v2 design.
+// Deployment states, see docs/releases.md.
 const (
 	StateNew      = "new"      // deployed, never routed: keeps its buffer
 	StateServing  = "serving"  // a route points at its build: keeps its buffer
