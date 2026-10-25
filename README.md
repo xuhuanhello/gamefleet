@@ -75,7 +75,7 @@ GameFleet 用你自己租的 VPS 跑战斗服（专用游戏服务器）：把�
 
 3. **接入集群。** 点"接入集群"，填一台新 VPS 的 IP 和 root 密码。几分钟后它就是一个集群。见[集群和机器](docs/clusters.md)。
 
-4. **推第一个构建。** 在"设置 → API key"里建一把 `push` 权限的 key，CI 用它推镜像、登记构建。见[构建、部署和路由](docs/releases.md)。
+4. **推第一个构建。** 在"设置 → API key"里建一把 `push` 权限的 key，CI 用它推镜像、登记构建。见[构建、部署和路由](docs/releases.md)，GitHub Actions 可以照抄[这个例子](docs/releases.md#用-github-actions)。
 
 5. **部署和路由。** 在构建页把构建部署到集群，再"设为正式"。
 

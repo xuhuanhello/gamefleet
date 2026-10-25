@@ -40,7 +40,52 @@ curl -sS --fail-with-body -X POST https://fleet.example.com/api/v1/builds \
 
 返回构建号、版本和联机版本。同一个镜像再登记一次，返回原来的构建。缺必填标签或端口不对时返回 `422 image_unusable`。
 
-在 GitHub Actions 里，把 key 放进一个 Environment 的 Secret，只给推镜像的 job 用。
+### 用 GitHub Actions
+
+把 push key 存成一个 Environment 的 Secret，只给推镜像的 job 用。下面的例子里 Environment 叫 `gamefleet`，Secret 叫 `GAMEFLEET_PUSH_KEY`。每次推到 `main`，它构建镜像、推上去、登记成构建。改掉开头的三个值，在服务端构建好的那一步后面接上就能用：
+
+```yaml
+name: Game server
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  game-server:
+    runs-on: ubuntu-latest
+    environment: gamefleet
+    env:
+      GAMEFLEET: fleet.example.com  # GameFleet 的域名
+      GAME: billiards               # 游戏名，也是镜像仓库名
+      COMPAT: dm-v7                 # 联机版本：客户端和战斗服之间的协议一变就改它
+      TAG: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v7
+      # 这里先构建你的服务端。Dockerfile 里要 EXPOSE 正好一个端口
+      - name: 构建镜像
+        run: |
+          docker build \
+            --label io.gamefleet.compat="$COMPAT" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$TAG" \
+            -t "$GAMEFLEET/$GAME:$TAG" .
+      - name: 推镜像、登记构建
+        env:
+          PUSH_KEY: ${{ secrets.GAMEFLEET_PUSH_KEY }}
+          # 登录信息只写在这次运行的临时目录里，不留在 runner 上
+          DOCKER_CONFIG: ${{ runner.temp }}/docker
+        run: |
+          set -euo pipefail
+          printf '%s' "$PUSH_KEY" | docker login "$GAMEFLEET" -u ci --password-stdin
+          docker push "$GAMEFLEET/$GAME:$TAG"
+          jq -n --arg repository "$GAME" --arg tag "$TAG" --arg note "$GITHUB_REF_NAME ${GITHUB_SHA::8}" \
+              '{repository: $repository, tag: $tag, note: $note}' |
+            curl -sS --fail-with-body -X POST "https://$GAMEFLEET/api/v1/builds" \
+              -H "Authorization: Bearer $PUSH_KEY" -H "Content-Type: application/json" --data-binary @-
+```
+
+标签用 `--label` 在构建时加上，Dockerfile 不用改。自己的 runner 上要有 Docker 和 `jq`。登记完的构建只出现在构建页上，部署和路由还是在控制台里做。
 
 ## 部署
 
