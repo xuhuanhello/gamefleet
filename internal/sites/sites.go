@@ -34,17 +34,26 @@ func New(list ...Site) *Directory {
 // Set replaces every site.
 func (d *Directory) Set(list []Site) {
 	list = slices.Clone(list)
-	slices.SortFunc(list, func(a, b Site) int { return strings.Compare(a.Name, b.Name) })
+	sortByName(list)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.list = list
 }
 
-// Add adds a site, or replaces the one with the same name.
+// Add adds a site, or replaces the one with the same name. It reads and
+// replaces the list under one lock, so clusters that join at the same time
+// all stay in it.
 func (d *Directory) Add(s Site) {
-	list := d.All()
-	list = slices.DeleteFunc(list, func(x Site) bool { return x.Name == s.Name })
-	d.Set(append(list, s))
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	list := slices.DeleteFunc(slices.Clone(d.list), func(x Site) bool { return x.Name == s.Name })
+	list = append(list, s)
+	sortByName(list)
+	d.list = list
+}
+
+func sortByName(list []Site) {
+	slices.SortFunc(list, func(a, b Site) int { return strings.Compare(a.Name, b.Name) })
 }
 
 // All returns the sites by name.
