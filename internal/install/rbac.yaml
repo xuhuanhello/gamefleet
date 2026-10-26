@@ -86,8 +86,9 @@ roleRef:
   kind: ClusterRole
   name: gamefleet
 ---
-# A long-lived token for GameFleet, which runs outside the cluster. Rotate
-# it by deleting this Secret; K3s makes a new one when the file is applied.
+# A long-lived token for GameFleet, which runs outside the cluster. GameFleet
+# keeps the token it got when the cluster joined, and cannot take a new one
+# yet: deleting this Secret cuts GameFleet off from the cluster.
 apiVersion: v1
 kind: Secret
 metadata:

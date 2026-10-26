@@ -18,7 +18,7 @@
       <button type="submit" class="primary">开始加入</button>
     </div>
   </form>
-  <p class="hint">GameFleet 用这个密码或私钥登录那台机器装好 K3s，等它出现在集群里。密码和私钥只留在内存里，用完就丢，不写进数据库和日志。要求：Debian 或 Ubuntu，x86_64，能连到集群的控制面；云防火墙要对所有地址放行 UDP 20000-20999。</p>
+  <p class="hint">GameFleet 用这个密码或私钥登录那台机器装好 K3s，等它出现在集群里。密码和私钥只留在内存里，不写进数据库和日志：装好就丢掉，没装好的留着给重试用，一小时后作废。要求：Debian 或 Ubuntu，x86_64，能连到集群的控制面；云防火墙要对所有地址放行 UDP 20000-20999。</p>
   <details class="manual">
     <summary>也可以自己在那台机器上用 root 执行</summary>
     <div class="panel-body"><pre class="command"><code data-copy="{{$d.JoinCommand}}">{{$d.JoinCommand}}</code></pre></div>

@@ -66,7 +66,9 @@ docker run --rm -i --user 0:0 -v "$PWD/credentials:/out" "$(sed -n 's/^GAMEFLEET
 
 GameFleet 只在有人用控制台时检查新版本：打开或刷新更新页、点"检查更新"时马上检查；打开别的页面时，距上次检查超过一小时才在后台查一次，用来在左下角提示。没人打开控制台时，它不联网检查。检查只发给 `api.github.com`，不带任何你的数据。
 
-**更新器做了什么：** GameFleet 在对公网开放的容器里，拿不到 Docker 的控制权。它只在 `/opt/gamefleet/update/` 里写一个请求（下载或更新，加一个版本号）；更新器读到以后，自己拼出镜像地址 `ghcr.io/xuhuanhello/gamefleet:版本` 去拉。所以 GameFleet 即使被攻破，也只能让管理机装上某个官方发布的版本。
+**更新器做了什么：** GameFleet 在对公网开放的容器里，拿不到 Docker 的控制权。它只在 `/opt/gamefleet/update/` 里写一个请求（下载或更新，加一个版本号）；更新器读到以后，自己拼出镜像地址 `ghcr.io/xuhuanhello/gamefleet:版本` 去拉，所以从控制台只能装上官方发布的版本。
+
+这不是挡住入侵者的一道墙。GameFleet 握着各个集群的凭据，能在集群里创建任意容器；集群的控制面和管理机是同一台机器时，攻破 GameFleet 的人能借集群拿到这台机器。所以 GameFleet 被攻破，要当作管理机和各个集群都失守了来处理。控制台的密码、验证器和 API key 要保管好。
 
 **更新说明里提到要更新集群上的设置时：** 有的版本会改 GameFleet 在集群里的权限或 Agones 的参数，这些 GameFleet 自己改不了，要在每个集群的控制面上执行，做法见[集群和机器](clusters.md#更新集群上的权限和-agones-设置)。
 
