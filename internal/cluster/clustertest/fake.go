@@ -4,6 +4,7 @@ package clustertest
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -290,7 +291,7 @@ func (f *Fake) Namespace() string { return Namespace }
 func (f *Fake) Nodes(context.Context) ([]cluster.Node, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.view.Nodes, f.err
+	return slices.Clone(f.view.Nodes), f.err
 }
 
 func (f *Fake) Pods(_ context.Context, node string) ([]cluster.Pod, error) {

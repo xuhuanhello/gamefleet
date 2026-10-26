@@ -53,7 +53,14 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// retire works on the cluster's retiring machines. A game server on one
+// first stops taking matches: allocation may be giving an empty one a match
+// right then. One that runs matches finishes them there; an empty one stops on
+// a later pass. A machine with no game server left is removed. Keep waits for
+// the pass to finish, so a machine is either kept or removed, not both.
 func (s *Service) retire(ctx context.Context, site sites.Site) error {
+	s.retiring.Lock()
+	defer s.retiring.Unlock()
 	nodes, err := site.Cluster.Nodes(ctx)
 	if err != nil {
 		return err
@@ -70,29 +77,31 @@ func (s *Service) retire(ctx context.Context, site sites.Site) error {
 			}
 			rooms = []roomOnNode{}
 			for _, r := range all {
-				rooms = append(rooms, roomOnNode{id: r.ID, node: r.Node, state: r.State, matches: len(r.Matches)})
+				rooms = append(rooms, roomOnNode{id: r.ID, node: r.Node, state: r.State, matches: len(r.Matches), retiring: r.Retiring})
 			}
 		}
-		playing := 0
+		left := 0
 		for _, r := range rooms {
 			if r.node != n.Name {
 				continue
 			}
-			if (r.state == "Allocated" || r.state == "Reserved") && r.matches > 0 {
-				// Its matches finish here, but it takes no new ones.
-				if err := site.Cluster.MarkRetiring(ctx, r.id, true); err != nil {
-					return err
+			playing := (r.state == "Allocated" || r.state == "Reserved") && r.matches > 0
+			if playing || !r.retiring {
+				if !r.retiring {
+					if err := site.Cluster.MarkRetiring(ctx, r.id, true); err != nil {
+						return err
+					}
 				}
-				playing++
+				left++
 				continue
 			}
-			// Idle game servers, and running ones whose matches are all over,
-			// go now; their Fleet starts new ones elsewhere.
+			// Empty, and out of allocation since an earlier pass. Its Fleet
+			// starts a new one elsewhere.
 			if err := site.Cluster.Shutdown(ctx, r.id); err != nil {
 				return err
 			}
 		}
-		if playing > 0 {
+		if left > 0 {
 			continue
 		}
 		if err := site.Cluster.DeleteNode(ctx, n.Name); err != nil {
@@ -110,4 +119,5 @@ func (s *Service) retire(ctx context.Context, site sites.Site) error {
 type roomOnNode struct {
 	id, node, state string
 	matches         int
+	retiring        bool
 }

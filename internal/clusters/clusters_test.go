@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,10 +179,25 @@ func TestRetireAMachine(t *testing.T) {
 	if err := f.svc.Retire(ctx, "us-1", "worker", "admin"); err != nil {
 		t.Fatal(err)
 	}
+	// First every game server on it stops taking matches: allocation may be
+	// giving an empty one a match right now.
 	if err := f.svc.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
 	rooms, _ := us.Rooms(ctx)
+	for _, r := range rooms {
+		if !r.Retiring {
+			t.Fatalf("%s still takes matches", r.ID)
+		}
+	}
+	if len(rooms) != 3 || len(us.DeletedNodes()) != 0 {
+		t.Fatalf("after one pass: rooms %+v, deleted %v", rooms, us.DeletedNodes())
+	}
+	// On the next pass the empty ones go; the one with a match stays.
+	if err := f.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rooms, _ = us.Rooms(ctx)
 	if len(rooms) != 1 || rooms[0].ID != "billiards-1-a" || !us.Retiring("billiards-1-a") || len(us.DeletedNodes()) != 0 {
 		t.Fatalf("with a match running: rooms %+v, deleted %v", rooms, us.DeletedNodes())
 	}
@@ -196,8 +212,10 @@ func TestRetireAMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	us.ReleaseMatch("billiards-1-a", "m-1")
-	if err := f.svc.Reconcile(ctx); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := f.svc.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if got := us.DeletedNodes(); len(got) != 1 || got[0] != "worker" {
 		t.Fatalf("deleted = %v", got)
@@ -263,5 +281,60 @@ func TestRuntimeVars(t *testing.T) {
 	}
 	if s, _ := us.Secret("billiards-runtime"); len(s.Data) != 0 {
 		t.Fatalf("secret after deleting every variable = %+v", s)
+	}
+}
+
+// hookedRooms runs a function once, the first time the game servers are
+// listed.
+type hookedRooms struct {
+	*clustertest.Fake
+	once   sync.Once
+	during func()
+}
+
+func (h *hookedRooms) Rooms(ctx context.Context) ([]cluster.Room, error) {
+	rooms, err := h.Fake.Rooms(ctx)
+	h.once.Do(h.during)
+	return rooms, err
+}
+
+// Keeping a machine while the loop is removing it either keeps it, or says
+// that it is gone: it never says kept while the loop deletes it after.
+func TestKeepWhileTheLoopRemovesTheMachine(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	us := clustertest.New("us-1", 0)
+	us.SetView(clustertest.View{Nodes: []cluster.Node{{Name: "worker", Ready: true}}})
+	us.AddRoom(cluster.Room{ID: "billiards-1-b", State: "Ready", Node: "worker", Capacity: 50})
+	f.dir.Add(sites.Site{Name: "us-1", Region: "us", Cluster: us})
+	if err := f.svc.Retire(ctx, "us-1", "worker", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next pass would remove the machine; someone keeps it meanwhile.
+	kept := make(chan error, 1)
+	f.dir.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &hookedRooms{Fake: us, during: func() {
+		go func() { kept <- f.svc.Keep(ctx, "us-1", "worker", "admin") }()
+		// Give Keep the time to finish, if nothing holds it back.
+		time.Sleep(100 * time.Millisecond)
+	}}})
+	if err := f.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	select {
+	case err = <-kept:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pass that removes the machine never listed its game servers")
+	}
+	deleted := len(us.DeletedNodes()) == 1
+	if err == nil && deleted {
+		t.Fatal("Keep said kept, and the loop deleted the machine")
+	}
+	if !deleted && err != nil {
+		t.Fatalf("the machine stayed, but Keep failed: %v", err)
 	}
 }

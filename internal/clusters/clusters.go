@@ -67,6 +67,10 @@ type Service struct {
 	run        Runner
 	appearWait time.Duration
 
+	// retiring is held by a pass that works on retiring machines, and by
+	// Keep: the loop never removes a machine that Keep just said it kept.
+	retiring sync.Mutex
+
 	mu    sync.Mutex
 	joins map[string]*Join    // by ID
 	nodes map[string]*NodeJob // by ID
@@ -478,8 +482,12 @@ func (s *Service) Rename(ctx context.Context, clusterName, node, title, actor st
 	return s.audit(ctx, actor, "node.rename", node+" @ "+clusterName, detail)
 }
 
-// Keep cancels a retirement that has not finished yet.
+// Keep cancels a retirement that has not finished yet. It waits for a pass
+// that works on retiring machines; if that pass removed the machine, Keep
+// says the machine is gone.
 func (s *Service) Keep(ctx context.Context, clusterName, node, actor string) error {
+	s.retiring.Lock()
+	defer s.retiring.Unlock()
 	site, n, err := s.node(ctx, clusterName, node)
 	if err != nil {
 		return err
