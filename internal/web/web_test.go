@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,7 +56,12 @@ type env struct {
 	clusters *clusters.Service
 	dir      *sites.Directory
 	updates  *fakeUpdates
+	// ahead moves the store's clock forward from now.
+	ahead *atomic.Int64
 }
+
+// later moves the store's clock forward by d.
+func (e *env) later(d time.Duration) { e.ahead.Add(int64(d)) }
 
 // images is a registry with two builds of billiards, tagged 141 and 142.
 type images map[string]registry.Image
@@ -132,6 +138,8 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
+	ahead := &atomic.Int64{}
+	db.SetClock(func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dir := sites.New(sites.Site{Name: "us-1", Region: "us", Cluster: fake})
 	keys := auth.NewKeys(db)
@@ -157,7 +165,7 @@ func newEnv(t *testing.T) *env {
 	client := server.Client()
 	client.Jar, _ = cookiejar.New(nil)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &env{server: server, client: client, fake: fake, secret: secret, store: db, releases: releases, clusters: fleets, dir: dir, updates: updates}
+	return &env{server: server, client: client, fake: fake, secret: secret, store: db, releases: releases, clusters: fleets, dir: dir, updates: updates, ahead: ahead}
 }
 
 func (e *env) get(t *testing.T, path string) (*http.Response, string) {

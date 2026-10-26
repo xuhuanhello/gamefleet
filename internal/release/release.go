@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/xuhuanhello/gamefleet/internal/cluster"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
@@ -225,8 +227,12 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest, actor string) (
 		if routed[b.ID] {
 			state = store.StateServing
 		}
+		fleet := fleetName(b)
+		if len(fleet) > maxFleetName {
+			return invalid("游戏名 %s 太长：Fleet 名 %s 超过了 %d 个字符", b.Game, fleet, maxFleetName)
+		}
 		d, err = tx.InsertDeployment(store.Deployment{
-			BuildID: b.ID, Cluster: req.Cluster, Fleet: fmt.Sprintf("%s-%d", b.Game, b.ID),
+			BuildID: b.ID, Cluster: req.Cluster, Fleet: fleet,
 			Buffer: req.Buffer, MaxReplicas: req.MaxReplicas, Rooms: req.Rooms, Resources: r, State: state, CreatedBy: actor,
 		})
 		if errors.Is(err, store.ErrDuplicate) {
@@ -244,6 +250,12 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest, actor string) (
 	return d, err
 }
 
+// UndeployWait is how long a deployment must be out of service before it can
+// be deleted by hand. An allocation that read the route while the deployment
+// still served may reach the cluster this late: the cluster client waits 10
+// seconds for an answer.
+const UndeployWait = time.Minute
+
 // Undeploy deletes a deployment that no route uses, with its Fleet. It
 // refuses while matches still run on it; those end on their own.
 func (s *Service) Undeploy(ctx context.Context, id int64, actor string) error {
@@ -256,11 +268,11 @@ func (s *Service) Undeploy(ctx context.Context, id int64, actor string) error {
 	if err != nil {
 		return err
 	}
-	switch d.State {
-	case store.StateDeleted:
+	if d.State == store.StateDeleted {
 		return nil
-	case store.StateServing:
-		return conflict("还有路由把对局分到这个构建，先改路由")
+	}
+	if err := s.undeployable(d); err != nil {
+		return err
 	}
 	site, ok := s.site(d.Cluster)
 	if !ok {
@@ -271,31 +283,75 @@ func (s *Service) Undeploy(ctx context.Context, id int64, actor string) error {
 		return err
 	}
 	for _, f := range fleets {
-		if f.Deployment == d.ID && f.Allocated+f.Reserved > 0 {
+		if owns(d, f) && f.Allocated+f.Reserved > 0 {
 			return conflict("%s 上还有 %d 局在打，打完才能删", d.Fleet, f.Allocated+f.Reserved)
 		}
 	}
-	if err := site.Cluster.DeleteAutoscaler(ctx, d.Fleet); err != nil {
-		return err
-	}
-	if err := site.Cluster.DeleteFleet(ctx, d.Fleet); err != nil {
-		return err
-	}
-	return s.store.Update(ctx, func(tx *store.Tx) error {
+	// Record the deletion before deleting anything. A route that moved to the
+	// build since the check above keeps the deployment; once recorded, no
+	// route can move to it.
+	err = s.store.Update(ctx, func(tx *store.Tx) error {
 		current, err := tx.Deployment(id)
 		if err != nil {
-			return err
+			return notFound(err, "部署")
 		}
-		if current.State == store.StateServing {
-			// A route moved to this build while the Fleet was being deleted;
-			// the loop recreates the Fleet.
-			return conflict("刚有路由指向了这个构建，没有删除")
+		if current.State == store.StateDeleted {
+			return nil
+		}
+		if err := s.undeployable(current); err != nil {
+			return err
 		}
 		if err := tx.SetDeploymentState(id, store.StateDeleted); err != nil {
 			return err
 		}
 		return tx.Audit(actor, "deployment.delete", d.Fleet+" @ "+d.Cluster, "")
 	})
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(site.Cluster.DeleteAutoscaler(ctx, d.Fleet), site.Cluster.DeleteFleet(ctx, d.Fleet)); err != nil {
+		// The loop deletes it as a leftover.
+		return fmt.Errorf("部署记为删除了，但集群里的 %s 还没删掉，后台会接着删: %w", d.Fleet, err)
+	}
+	return nil
+}
+
+// undeployable refuses to delete a deployment by hand while a route uses it,
+// or for UndeployWait after the last one stopped.
+func (s *Service) undeployable(d store.Deployment) error {
+	switch {
+	case d.State == store.StateServing:
+		return conflict("还有路由把对局分到这个构建，先改路由")
+	case d.State == store.StateDraining && s.store.Now().Sub(d.Since) < UndeployWait:
+		left := UndeployWait - s.store.Now().Sub(d.Since)
+		return conflict("%s 刚停止接新局，可能还有分配请求在路上。%s 后再删", d.Fleet, left.Round(time.Second))
+	}
+	return nil
+}
+
+// maxFleetName is the longest Fleet name: Agones puts it in a label value.
+const maxFleetName = 63
+
+// fleetName names a new deployment's Fleet: the game, the build, and four
+// random characters. A database restored from a backup hands out build and
+// deployment IDs again, while the Fleets of the deployments it lost may still
+// run. The random part keeps a new deployment off such a Fleet: the loop takes
+// that one for a leftover and drains it, and the new build serves from a Fleet
+// of its own.
+func fleetName(b store.Build) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	suffix := make([]byte, 4)
+	for i := range suffix {
+		suffix[i] = chars[rand.IntN(len(chars))]
+	}
+	return fmt.Sprintf("%s-%d-%s", b.Game, b.ID, suffix)
+}
+
+// owns reports whether the Fleet is the deployment's: it has the
+// deployment's name and carries its ID. A Fleet with only one of the two
+// belongs to a deployment that is gone.
+func owns(d store.Deployment, f cluster.ManagedFleet) bool {
+	return f.Name == d.Fleet && f.Deployment == d.ID
 }
 
 // SetBuffer changes how many idle game servers a deployment keeps.

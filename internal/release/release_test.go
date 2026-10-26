@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,14 +158,14 @@ func TestReleaseLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
-	fleet, spec, ok := f.us.ManagedFleet("billiards-1")
+	fleet, spec, ok := f.us.ManagedFleet(d141.Fleet)
 	if !ok || fleet.Deployment != d141.ID || spec.Image != "fleet.example.com/billiards@sha256:aaa" || spec.Port != 7770 || spec.Replicas != 2 || spec.Rooms != 50 {
 		t.Fatalf("fleet = %+v, spec = %+v", fleet, spec)
 	}
-	if a, ok := f.us.Autoscaler("billiards-1"); !ok || a.Buffer != 2 || a.MaxReplicas != 10 {
+	if a, ok := f.us.Autoscaler(d141.Fleet); !ok || a.Buffer != 2 || a.MaxReplicas != 10 {
 		t.Fatalf("autoscaler = %+v, %v", a, ok)
 	}
-	if f.state(t, d141.ID) != store.StateServing || f.resolve(t, Stable) != "billiards-1" {
+	if f.state(t, d141.ID) != store.StateServing || f.resolve(t, Stable) != d141.Fleet {
 		t.Fatal("stable should go to 141")
 	}
 
@@ -178,7 +179,7 @@ func TestReleaseLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
-	if f.resolve(t, Canary) != "billiards-2" || f.resolve(t, Stable) != "billiards-1" {
+	if f.resolve(t, Canary) != d142.Fleet || f.resolve(t, Stable) != d141.Fleet {
 		t.Fatal("testers get 142, everyone else 141")
 	}
 	views, err := f.svc.Routes(ctx, "billiards")
@@ -191,13 +192,13 @@ func TestReleaseLifecycle(t *testing.T) {
 	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if f.state(t, d141.ID) != store.StateDraining || f.resolve(t, Stable) != "billiards-2" || f.resolve(t, Canary) != "none" {
+	if f.state(t, d141.ID) != store.StateDraining || f.resolve(t, Stable) != d142.Fleet || f.resolve(t, Canary) != "none" {
 		t.Fatal("after promotion stable goes to 142, 141 drains and the canary ends")
 	}
-	f.us.SetAllocated("billiards-1", 1)
+	f.us.SetAllocated(d141.Fleet, 1)
 	f.reconcile(t)
-	fleet, _, _ = f.us.ManagedFleet("billiards-1")
-	if _, ok := f.us.Autoscaler("billiards-1"); ok || fleet.Replicas != 0 {
+	fleet, _, _ = f.us.ManagedFleet(d141.Fleet)
+	if _, ok := f.us.Autoscaler(d141.Fleet); ok || fleet.Replicas != 0 {
 		t.Fatalf("draining fleet = %+v, autoscaler kept %v", fleet, ok)
 	}
 	if err := f.svc.Undeploy(ctx, d141.ID, "admin"); !errors.Is(err, ErrConflict) {
@@ -205,15 +206,15 @@ func TestReleaseLifecycle(t *testing.T) {
 	}
 
 	// The match ends; the Fleet stays for the retention time, then goes.
-	f.us.SetAllocated("billiards-1", 0)
+	f.us.SetAllocated(d141.Fleet, 0)
 	f.now = f.now.Add(23 * time.Hour)
 	f.reconcile(t)
-	if _, _, ok := f.us.ManagedFleet("billiards-1"); !ok {
+	if _, _, ok := f.us.ManagedFleet(d141.Fleet); !ok {
 		t.Fatal("reclaimed before the retention time")
 	}
 	f.now = f.now.Add(2 * time.Hour)
 	f.reconcile(t)
-	if _, _, ok := f.us.ManagedFleet("billiards-1"); ok || f.state(t, d141.ID) != store.StateDeleted {
+	if _, _, ok := f.us.ManagedFleet(d141.Fleet); ok || f.state(t, d141.ID) != store.StateDeleted {
 		t.Fatal("not reclaimed after the retention time")
 	}
 
@@ -229,21 +230,21 @@ func TestReleaseLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
-	if f.resolve(t, Stable) != "billiards-1" || f.state(t, again.ID) != store.StateServing || f.state(t, d142.ID) != store.StateDraining {
+	if f.resolve(t, Stable) != again.Fleet || f.state(t, again.ID) != store.StateServing || f.state(t, d142.ID) != store.StateDraining {
 		t.Fatal("after rollback stable goes to 141 and 142, routed by nothing, drains")
 	}
 	// Testers go on with 142 while everyone else is back on 141.
 	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if f.resolve(t, Canary) != "billiards-2" || f.state(t, d142.ID) != store.StateServing {
+	if f.resolve(t, Canary) != d142.Fleet || f.state(t, d142.ID) != store.StateServing {
 		t.Fatal("canary on 142 again")
 	}
-	if _, ok := f.us.Autoscaler("billiards-1"); !ok {
+	if _, ok := f.us.Autoscaler(again.Fleet); !ok {
 		t.Fatal("the rolled-back fleet keeps no buffer")
 	}
 
-	// End the canary: 142 drains and can be deleted at once.
+	// End the canary: 142 drains and can be deleted a minute later.
 	if err := f.svc.Undeploy(ctx, d142.ID, "admin"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("undeploying a routed build: %v", err)
 	}
@@ -253,10 +254,11 @@ func TestReleaseLifecycle(t *testing.T) {
 	if f.state(t, d142.ID) != store.StateDraining || f.resolve(t, Canary) != "none" {
 		t.Fatal("after ending the canary 142 drains")
 	}
+	f.now = f.now.Add(UndeployWait)
 	if err := f.svc.Undeploy(ctx, d142.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := f.us.ManagedFleet("billiards-2"); ok || f.state(t, d142.ID) != store.StateDeleted {
+	if _, _, ok := f.us.ManagedFleet(d142.Fleet); ok || f.state(t, d142.ID) != store.StateDeleted {
 		t.Fatal("undeploy left the fleet")
 	}
 
@@ -309,15 +311,15 @@ func TestDrainingStopsGameServersWithoutMatches(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	b := f.register(t, "141")
-	f.deploy(t, b)
+	d := f.deploy(t, b)
 	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
-	f.us.AddRoom(cluster.Room{ID: "busy", Fleet: "billiards-1", State: "Allocated", Capacity: 50,
+	f.us.AddRoom(cluster.Room{ID: "busy", Fleet: d.Fleet, State: "Allocated", Capacity: 50,
 		Matches: []cluster.Match{{ID: "m-1"}}, Stale: []string{"m-0"}})
-	f.us.AddRoom(cluster.Room{ID: "empty", Fleet: "billiards-1", State: "Allocated", Capacity: 50, LastAllocated: f.now})
-	f.us.AddRoom(cluster.Room{ID: "idle", Fleet: "billiards-1", State: "Ready", Capacity: 50})
+	f.us.AddRoom(cluster.Room{ID: "empty", Fleet: d.Fleet, State: "Allocated", Capacity: 50, LastAllocated: f.now})
+	f.us.AddRoom(cluster.Room{ID: "idle", Fleet: d.Fleet, State: "Ready", Capacity: 50})
 
 	// While the build serves, an empty game server waits for the next match.
 	f.reconcile(t)
@@ -328,12 +330,14 @@ func TestDrainingStopsGameServersWithoutMatches(t *testing.T) {
 		t.Fatalf("notes of finished matches kept: %+v", room)
 	}
 
-	// Draining, it goes; the one still running a match stays.
+	// Draining, it stops taking matches and then goes; the one still running
+	// a match stays.
 	b2 := f.register(t, "142")
 	f.deploy(t, b2)
 	if err := f.svc.SetRoute(ctx, Stable, b2.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
+	f.reconcile(t)
 	f.reconcile(t)
 	if room, _ := f.us.Get(ctx, "empty"); room != nil {
 		t.Fatal("an empty game server of a draining build was kept")
@@ -347,13 +351,13 @@ func TestServingStopsGameServersIdleForLong(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	b := f.register(t, "141")
-	f.deploy(t, b)
+	d := f.deploy(t, b)
 	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
 	room := func(id string, idle time.Duration, matches ...cluster.Match) cluster.Room {
-		return cluster.Room{ID: id, Fleet: "billiards-1", State: "Allocated", Capacity: 50,
+		return cluster.Room{ID: id, Fleet: d.Fleet, State: "Allocated", Capacity: 50,
 			LastAllocated: f.now.Add(-idle), Matches: matches}
 	}
 	f.us.AddRoom(room("recent", time.Minute))
@@ -466,5 +470,154 @@ func TestRouteKeepsEveryCluster(t *testing.T) {
 	deployTo(next, "sg-1")
 	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); err != nil {
 		t.Fatalf("promoting once sg-1 has the build: %v", err)
+	}
+}
+
+// hooked runs a function once, the first time the Fleets are read: something
+// that happens while a deletion is under way.
+type hooked struct {
+	*clustertest.Fake
+	once   sync.Once
+	during func()
+}
+
+func (h *hooked) ManagedFleets(ctx context.Context) ([]cluster.ManagedFleet, error) {
+	fleets, err := h.Fake.ManagedFleets(ctx)
+	h.once.Do(h.during)
+	return fleets, err
+}
+
+// promoted deploys 141 and 142 and routes stable from 141 to 142, so that 141
+// drains.
+func promoted(t *testing.T, f *fixture) (d141, d142 store.Deployment) {
+	t.Helper()
+	ctx := context.Background()
+	b141 := f.register(t, "141")
+	d141 = f.deploy(t, b141)
+	if err := f.svc.SetRoute(ctx, Stable, b141.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	b142 := f.register(t, "142")
+	d142 = f.deploy(t, b142)
+	if err := f.svc.SetRoute(ctx, Stable, b142.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	return d141, d142
+}
+
+// A deployment that just stopped serving cannot be deleted by hand yet: an
+// allocation that read the route a moment ago may still be on its way.
+func TestUndeployWaitsAfterServing(t *testing.T) {
+	f := newFixture(t)
+	d141, _ := promoted(t, f)
+	ctx := context.Background()
+	if err := f.svc.Undeploy(ctx, d141.ID, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("undeploying at once: err = %v, want ErrConflict", err)
+	}
+	f.now = f.now.Add(UndeployWait)
+	if err := f.svc.Undeploy(ctx, d141.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := f.us.ManagedFleet(d141.Fleet); ok || f.state(t, d141.ID) != store.StateDeleted {
+		t.Fatal("undeploy left the fleet")
+	}
+}
+
+// A rollback to a deployment that is being deleted by hand keeps it.
+func TestUndeployLosesToARollback(t *testing.T) {
+	f := newFixture(t)
+	d141, _ := promoted(t, f)
+	ctx := context.Background()
+	f.now = f.now.Add(UndeployWait)
+	f.svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &hooked{Fake: f.us, during: func() {
+		if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); err != nil {
+			t.Error(err)
+		}
+	}}})
+	if err := f.svc.Undeploy(ctx, d141.ID, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("undeploy during a rollback: err = %v, want ErrConflict", err)
+	}
+	if _, _, ok := f.us.ManagedFleet(d141.Fleet); !ok || f.state(t, d141.ID) != store.StateServing {
+		t.Fatal("the rolled-back deployment lost its fleet")
+	}
+}
+
+// A rollback after the loop read the database, before it reclaimed the
+// drained deployment, keeps the deployment and its Fleet.
+func TestReclaimLosesToARollback(t *testing.T) {
+	f := newFixture(t)
+	d141, _ := promoted(t, f)
+	ctx := context.Background()
+	f.now = f.now.Add(25 * time.Hour)
+	f.svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &hooked{Fake: f.us, during: func() {
+		if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); err != nil {
+			t.Error(err)
+		}
+	}}})
+	f.reconcile(t)
+	if _, _, ok := f.us.ManagedFleet(d141.Fleet); !ok || f.state(t, d141.ID) != store.StateServing {
+		t.Fatal("the loop reclaimed a deployment a rollback had just routed to")
+	}
+}
+
+// A draining Fleet's empty game server first stops taking matches, and stops
+// on a later pass: a rollback may route a match to it in between.
+func TestDrainingTakesEmptyGameServersOutOfAllocationFirst(t *testing.T) {
+	f := newFixture(t)
+	d141, _ := promoted(t, f)
+	ctx := context.Background()
+	f.us.AddRoom(cluster.Room{ID: "empty", Fleet: d141.Fleet, State: "Allocated", Capacity: 50, LastAllocated: f.now})
+	f.reconcile(t)
+	if r, _ := f.us.Get(ctx, "empty"); r == nil || !f.us.Retiring("empty") {
+		t.Fatalf("after one pass: room %+v, retiring %v; want kept and out of allocation", r, f.us.Retiring("empty"))
+	}
+	f.reconcile(t)
+	if r, _ := f.us.Get(ctx, "empty"); r != nil {
+		t.Fatal("still empty on the next pass, it was kept")
+	}
+}
+
+// A database restored from a backup hands out build and deployment IDs again.
+// A Fleet that a lost deployment with such an ID left in the cluster is a
+// leftover: the new deployment gets a Fleet of its own and serves from it.
+func TestFleetOfAReusedIDIsALeftover(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.us.CreateFleet(ctx, cluster.FleetSpec{Name: "billiards-1", Deployment: 1, Build: 1, Image: "old", Replicas: 2}); err != nil {
+		t.Fatal(err)
+	}
+	b := f.register(t, "141")
+	d := f.deploy(t, b)
+	if b.ID != 1 || d.ID != 1 {
+		t.Fatalf("build %d, deployment %d: the test needs both to reuse ID 1", b.ID, d.ID)
+	}
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile(t)
+	if d.Fleet == "billiards-1" || f.resolve(t, Stable) != d.Fleet {
+		t.Fatalf("deployment fleet %s, stable resolves to %s: want a fleet of its own", d.Fleet, f.resolve(t, Stable))
+	}
+	if _, spec, ok := f.us.ManagedFleet(d.Fleet); !ok || spec.Image == "old" {
+		t.Fatalf("the deployment's own fleet: %+v, %v", spec, ok)
+	}
+	if _, _, ok := f.us.ManagedFleet("billiards-1"); ok {
+		t.Fatal("the leftover fleet of the lost deployment was kept")
+	}
+}
+
+// Every deployment's Fleet has a name of its own, even of one build in one
+// cluster.
+func TestRedeployGetsAFleetOfItsOwn(t *testing.T) {
+	f := newFixture(t)
+	b := f.register(t, "141")
+	first := f.deploy(t, b)
+	if err := f.svc.Undeploy(context.Background(), first.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if again := f.deploy(t, b); again.Fleet == first.Fleet {
+		t.Fatalf("both deployments are Fleet %s", again.Fleet)
 	}
 }

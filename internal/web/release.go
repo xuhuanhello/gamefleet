@@ -293,7 +293,7 @@ func (c *Console) build(w http.ResponseWriter, r *http.Request, p page) {
 		}
 		deployed[d.Cluster] = true
 		for _, f := range fleets[d.Cluster] {
-			if f.Deployment == d.ID {
+			if f.Name == d.Fleet && f.Deployment == d.ID {
 				row.Live = &f
 			}
 		}

@@ -98,7 +98,8 @@ func (s *Service) reconcileSite(ctx context.Context, site sites.Site, deployment
 	if err != nil {
 		return err
 	}
-	live := map[int64]bool{}
+	// The deployments' own Fleets, by name.
+	live := map[string]bool{}
 	var errs []error
 	for _, room := range rooms {
 		if len(room.Stale) == 0 {
@@ -109,12 +110,12 @@ func (s *Service) reconcileSite(ctx context.Context, site sites.Site, deployment
 		}
 	}
 	for _, d := range deployments {
-		live[d.ID] = true
 		f, exists := byName[d.Fleet]
-		if exists && f.Deployment != d.ID {
+		if exists && !owns(d, f) {
 			// An older deployment's Fleet of the same name is still going away.
 			continue
 		}
+		live[d.Fleet] = true
 		var err error
 		switch d.State {
 		case store.StateNew, store.StateServing:
@@ -127,7 +128,7 @@ func (s *Service) reconcileSite(ctx context.Context, site sites.Site, deployment
 		}
 	}
 	for _, f := range fleets {
-		if live[f.Deployment] || f.Deleting {
+		if live[f.Name] || f.Deleting {
 			continue
 		}
 		if err := errors.Join(s.stopEmpty(ctx, site, f.Name, rooms), s.removeLeftover(ctx, site, f)); err != nil {
@@ -157,14 +158,21 @@ func (s *Service) keepRunning(ctx context.Context, site sites.Site, d store.Depl
 	return site.Cluster.ApplyAutoscaler(ctx, d.Fleet, d.ID, d.Buffer, d.MaxReplicas)
 }
 
-// stopEmpty deletes the Fleet's game servers that run no match any more. A
+// stopEmpty stops the Fleet's game servers that run no match any more. A
 // game server outlives its matches to take the next ones, so a Fleet that
-// gets no new matches would otherwise keep them for ever.
+// gets no new matches would otherwise keep them for ever. A rollback may route
+// a match to one right then, so it first takes them out of allocation, and
+// stops them on a later pass if they are still empty.
 func (s *Service) stopEmpty(ctx context.Context, site sites.Site, fleet string, rooms []cluster.Room) error {
 	var errs []error
 	for _, room := range rooms {
-		if room.Fleet == fleet && room.State == "Allocated" && len(room.Matches) == 0 {
+		if room.Fleet != fleet || room.State != "Allocated" || len(room.Matches) > 0 {
+			continue
+		}
+		if room.Retiring {
 			errs = append(errs, site.Cluster.Shutdown(ctx, room.ID))
+		} else {
+			errs = append(errs, site.Cluster.MarkRetiring(ctx, room.ID, true))
 		}
 	}
 	return errors.Join(errs...)
@@ -206,7 +214,8 @@ func (s *Service) drain(ctx context.Context, site sites.Site, d store.Deployment
 	}
 	if !exists {
 		// Someone deleted the Fleet by hand; there is nothing left to drain.
-		return s.markDeleted(ctx, d, "它的 Fleet 已经不在了")
+		_, err := s.markDeleted(ctx, d, "它的 Fleet 已经不在了")
+		return err
 	}
 	if f.Replicas != 0 {
 		if err := site.Cluster.ScaleFleet(ctx, d.Fleet, 0); err != nil {
@@ -216,17 +225,26 @@ func (s *Service) drain(ctx context.Context, site sites.Site, d store.Deployment
 	if f.Allocated+f.Reserved > 0 || s.store.Now().Sub(d.Since) < s.retention {
 		return nil
 	}
+	// Record the deletion first: a route that moved back to the build since
+	// this pass read the database keeps the deployment, and once recorded no
+	// route can move to it.
+	deleted, err := s.markDeleted(ctx, d, fmt.Sprintf("排空 %s，没有对局了", s.store.Now().Sub(d.Since).Round(time.Minute)))
+	if err != nil || !deleted {
+		return err
+	}
 	if err := site.Cluster.DeleteFleet(ctx, d.Fleet); err != nil {
+		// The next pass finds the Fleet a leftover and deletes it.
 		return err
 	}
 	s.log.Info("fleet reclaimed", "cluster", site.Name, "fleet", d.Fleet)
-	return s.markDeleted(ctx, d, fmt.Sprintf("排空 %s，没有对局了", s.store.Now().Sub(d.Since).Round(time.Minute)))
+	return nil
 }
 
-// markDeleted records that the loop deleted a draining deployment, unless a
-// route started using its build again in the meantime.
-func (s *Service) markDeleted(ctx context.Context, d store.Deployment, why string) error {
-	return s.store.Update(ctx, func(tx *store.Tx) error {
+// markDeleted records the deletion of a draining deployment, unless a route
+// started using its build again in the meantime. It reports whether it did.
+func (s *Service) markDeleted(ctx context.Context, d store.Deployment, why string) (bool, error) {
+	deleted := false
+	err := s.store.Update(ctx, func(tx *store.Tx) error {
 		current, err := tx.Deployment(d.ID)
 		if err != nil || current.State != store.StateDraining {
 			return err
@@ -234,8 +252,10 @@ func (s *Service) markDeleted(ctx context.Context, d store.Deployment, why strin
 		if err := tx.SetDeploymentState(d.ID, store.StateDeleted); err != nil {
 			return err
 		}
+		deleted = true
 		return tx.Audit("gamefleet", "deployment.reclaim", d.Fleet+" @ "+d.Cluster, why)
 	})
+	return deleted, err
 }
 
 func (s *Service) removeLeftover(ctx context.Context, site sites.Site, f cluster.ManagedFleet) error {

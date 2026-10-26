@@ -72,12 +72,12 @@ POST /api/v1/allocations
 
 ```json
 {
-  "roomId": "billiards-1-9q4jb-qwdr8",
+  "roomId": "billiards-1-k3x9-9q4jb-qwdr8",
   "cluster": "us-1",
   "state": "Allocated",
   "address": "203.0.113.20",
   "port": 20370,
-  "fleet": "billiards-1",
+  "fleet": "billiards-1-k3x9",
   "build": "1",
   "matchId": "8c1f0c7e-5d1e-4f4c-9a59-3c3b8e0f2a11",
   "players": [{"userId": "u-1", "seat": 0}, {"userId": "u-2", "seat": 1}]

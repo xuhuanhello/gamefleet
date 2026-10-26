@@ -20,19 +20,44 @@ func (e *env) register(t *testing.T, tag string) int64 {
 	return b.ID
 }
 
-// serve deploys build 141 to us-1 as Fleet billiards-1, the one the test game
-// servers belong to, and routes stable to it, so their free places count.
+// serve deploys build 141 to us-1, moves the test game servers into its
+// Fleet, and routes stable to it, so their free places count.
 func (e *env) serve(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	id := e.register(t, "141")
-	if _, err := e.releases.Deploy(ctx, release.DeployRequest{BuildID: id, Cluster: "us-1", Buffer: 1, MaxReplicas: 10, Rooms: 50,
-		Resources: release.Defaults.Resources}, "admin"); err != nil {
+	d, err := e.releases.Deploy(ctx, release.DeployRequest{BuildID: id, Cluster: "us-1", Buffer: 1, MaxReplicas: 10, Rooms: 50,
+		Resources: release.Defaults.Resources}, "admin")
+	if err != nil {
 		t.Fatal(err)
+	}
+	rooms, err := e.fake.Rooms(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, room := range rooms {
+		room.Fleet = d.Fleet
+		e.fake.AddRoom(room)
 	}
 	if err := e.releases.SetRoute(ctx, release.Stable, id, "admin"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// fleetOf returns the name of the Fleet GameFleet created for the deployment.
+func (e *env) fleetOf(t *testing.T, deployment int64) string {
+	t.Helper()
+	fleets, err := e.fake.ManagedFleets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fleets {
+		if f.Deployment == deployment {
+			return f.Name
+		}
+	}
+	t.Fatalf("no Fleet for deployment %d in %+v", deployment, fleets)
+	return ""
 }
 
 func (e *env) reconcile(t *testing.T) {
@@ -96,7 +121,7 @@ func TestReleaseThroughTheConsole(t *testing.T) {
 	e.reconcile(t)
 	_, body = e.get(t, "/builds/1")
 	page := visible(body)
-	for _, want := range []string{"billiards #1 正式", "正式通道在用这个构建", "us-1 billiards-1 服务中", "CPU 250–1500m"} {
+	for _, want := range []string{"billiards #1 正式", "正式通道在用这个构建", "us-1 " + e.fleetOf(t, 1) + " 服务中", "CPU 250–1500m"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("build page lacks %q\n%s", want, page)
 		}
@@ -138,8 +163,10 @@ func TestReleaseThroughTheConsole(t *testing.T) {
 		t.Errorf("after rollback:\n%s", page)
 	}
 
-	// 142 drains now; deleting it works because no match runs on it.
+	// 142 drains now; deleting it works a minute later because no match runs
+	// on it.
 	e.reconcile(t)
+	e.later(release.UndeployWait)
 	e.expectRedirect(t, "/deployments/2/delete", url.Values{"back": {"/builds/2"}}, "/builds/2")
 	_, body = e.get(t, "/builds/2")
 	if page := visible(body); !strings.Contains(page, "删除过的部署") || !strings.Contains(page, "部署到集群") {
@@ -154,10 +181,10 @@ func TestReleaseThroughTheConsole(t *testing.T) {
 	_, body = e.get(t, "/settings/audit")
 	page = visible(body)
 	for _, want := range []string{
-		"admin 删除部署 billiards-2 @ us-1", "admin 删除路由 billiards canary dm-v7 原来是 #2",
+		"admin 删除部署 billiards-2-", "admin 删除路由 billiards canary dm-v7 原来是 #2",
 		"admin 删除路由 billiards canary dm-v7 原来是 #2，和正式一样，灰度结束",
 		"admin 回滚 billiards stable dm-v7 #2 → #1", "admin 晋升 billiards stable dm-v7 #1 → #2",
-		"admin 部署 billiards-1 @ us-1", "key:ci 登记构建 billiards #1",
+		"admin 部署 " + e.fleetOf(t, 1) + " @ us-1", "key:ci 登记构建 billiards #1",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("audit log lacks %q\n%s", want, page)
@@ -181,7 +208,7 @@ func TestOverviewNamesTheBuildOfEachFleet(t *testing.T) {
 	// The fake's console view lists the hand-made Fleet "billiards" and, as
 	// a real cluster would, the one GameFleet created.
 	view := e.fake.View()
-	view.Fleets = append(view.Fleets, cluster.Fleet{Name: "billiards-1", Replicas: 2, Ready: 2})
+	view.Fleets = append(view.Fleets, cluster.Fleet{Name: e.fleetOf(t, 1), Replicas: 2, Ready: 2})
 	e.fake.SetView(view)
 	for _, path := range []string{"/", "/clusters/us-1"} {
 		_, body := e.get(t, path)
@@ -241,7 +268,7 @@ func TestTwoCompatVersionsServeSideBySide(t *testing.T) {
 	}
 	e.reconcile(t)
 	view := e.fake.View()
-	view.Fleets = append(view.Fleets, cluster.Fleet{Name: "billiards-1", Replicas: 1}, cluster.Fleet{Name: "billiards-2", Replicas: 1})
+	view.Fleets = append(view.Fleets, cluster.Fleet{Name: e.fleetOf(t, 1), Replicas: 1}, cluster.Fleet{Name: e.fleetOf(t, 2), Replicas: 1})
 	e.fake.SetView(view)
 	_, body := e.get(t, "/")
 	page := visible(body)
