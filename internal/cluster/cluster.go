@@ -36,6 +36,10 @@ const (
 	// AnnotationMatchPrefix followed by a match ID holds that match's
 	// MatchInfo as JSON.
 	AnnotationMatchPrefix = "gamefleet.io/match."
+	// MaxMatchIDLength is the longest match ID that fits after
+	// AnnotationMatchPrefix: the name of an annotation, after its
+	// "gamefleet.io/", holds at most 63 characters, and "match." takes 6.
+	MaxMatchIDLength = 57
 	// AnnotationEndPrefix followed by a match ID asks the game server to end
 	// that match; the value is when it was asked.
 	AnnotationEndPrefix = "gamefleet.io/end."

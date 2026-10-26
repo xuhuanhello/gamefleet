@@ -148,7 +148,7 @@ func TestAllocateRejectsMalformedRequests(t *testing.T) {
 	svc := newService(t, clustertest.New("us-1", 9), clustertest.New("sg-1", 9))
 	cases := map[string]func(*Request){
 		"match id with spaces": func(r *Request) { r.MatchID = "match 1" },
-		"match id too long":    func(r *Request) { r.MatchID = strings.Repeat("a", 64) },
+		"match id too long":    func(r *Request) { r.MatchID = strings.Repeat("a", cluster.MaxMatchIDLength+1) },
 		"uppercase game":       func(r *Request) { r.Game = "Billiards" },
 		"empty compat":         func(r *Request) { r.Compat = "" },
 		"no players":           func(r *Request) { r.Players = nil },
@@ -164,6 +164,19 @@ func TestAllocateRejectsMalformedRequests(t *testing.T) {
 				t.Fatalf("err = %v, want ErrInvalid", err)
 			}
 		})
+	}
+}
+
+// The longest match ID still names its annotation: Kubernetes takes 63
+// characters after "gamefleet.io/", and "match." takes 6 of them.
+func TestAllocateTakesTheLongestMatchID(t *testing.T) {
+	svc := newService(t, clustertest.New("us-1", 1), clustertest.New("sg-1", 1))
+	id := strings.Repeat("a", cluster.MaxMatchIDLength)
+	if len(strings.TrimPrefix(cluster.AnnotationMatchPrefix, "gamefleet.io/")+id) != 63 {
+		t.Fatalf("MaxMatchIDLength = %d does not fill the 63 characters of an annotation name", cluster.MaxMatchIDLength)
+	}
+	if _, err := svc.Allocate(context.Background(), request(id, "us", "stable")); err != nil {
+		t.Fatal(err)
 	}
 }
 

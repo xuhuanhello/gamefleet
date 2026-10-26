@@ -71,9 +71,10 @@ type Service struct {
 }
 
 var (
-	// labelValue matches what Kubernetes accepts as a label value.
-	labelValue = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
-	nameValue  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// matchIDChars matches what may follow AnnotationMatchPrefix in the name
+	// of an annotation; validMatchID also limits its length.
+	matchIDChars = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
+	nameValue    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	// roomName matches Kubernetes object names, which GameServer names are.
 	roomName = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 )
@@ -177,7 +178,7 @@ func (s *Service) Room(ctx context.Context, id string) (*cluster.Room, error) {
 
 // RoomByMatch returns the room allocated for the match, or nil.
 func (s *Service) RoomByMatch(ctx context.Context, matchID string) (*cluster.Room, error) {
-	if !labelValue.MatchString(matchID) {
+	if !validMatchID(matchID) {
 		return nil, fmt.Errorf("%w: matchId", ErrInvalid)
 	}
 	return s.find(func(c cluster.API) (*cluster.Room, error) { return c.FindByMatch(ctx, matchID) })
@@ -261,7 +262,7 @@ func mapError(err error) error {
 func (r Request) validate() error {
 	invalid := func(field string) error { return fmt.Errorf("%w: %s", ErrInvalid, field) }
 	switch {
-	case !labelValue.MatchString(r.MatchID):
+	case !validMatchID(r.MatchID):
 		return invalid("matchId")
 	case !nameValue.MatchString(r.Game):
 		return invalid("game")
@@ -287,6 +288,11 @@ func (r Request) validate() error {
 		seats[p.Seat] = true
 	}
 	return nil
+}
+
+// validMatchID reports whether the ID can name the match's annotation.
+func validMatchID(id string) bool {
+	return len(id) <= cluster.MaxMatchIDLength && matchIDChars.MatchString(id)
 }
 
 func printable(s string, max int) bool {
