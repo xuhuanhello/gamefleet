@@ -295,3 +295,58 @@ func TestAllocationsInOneClusterTakeTurns(t *testing.T) {
 		t.Fatalf("%d allocations ran at once", us.most)
 	}
 }
+
+// A retry finds its match's room even when the route is gone: promoting a
+// canary deletes the canary route, maybe between a request and its retry.
+func TestRetryFindsTheRoomAfterItsRouteIsGone(t *testing.T) {
+	us := clustertest.New("us-1", 1)
+	canary := "billiards canary " + compat + " us"
+	r := routes{canary: {Cluster: "us-1", Fleet: "billiards-143", Build: 143}}
+	svc := New(r, sites.New(sites.Site{Name: "us-1", Region: "us", Cluster: us}))
+	ctx := context.Background()
+	first, err := svc.Allocate(ctx, request("m-1", "us", "canary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(r, canary)
+	again, err := svc.Allocate(ctx, request("m-1", "us", "canary"))
+	if err != nil || again.Created || again.Room.ID != first.Room.ID {
+		t.Fatalf("retry after the route went = %+v, %v; want room %s", again, err, first.Room.ID)
+	}
+	if _, err := svc.Allocate(ctx, request("m-2", "us", "canary")); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("a new match on the deleted route: err = %v, want ErrRouteNotFound", err)
+	}
+}
+
+// Requests for one match that overlap, such as a retry sent while a slow
+// first request still runs, all get the same room.
+func TestOverlappingRequestsForOneMatchShareTheRoom(t *testing.T) {
+	svc := newService(t, clustertest.New("us-1", 8), clustertest.New("sg-1", 0))
+	const n = 8
+	results := make([]Result, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = svc.Allocate(context.Background(), request("m-1", "us", "stable"))
+		}()
+	}
+	wg.Wait()
+	created := 0
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("request %d: %v", i, errs[i])
+		}
+		if results[i].Room.ID != results[0].Room.ID {
+			t.Fatalf("request %d got room %s, request 0 got %s", i, results[i].Room.ID, results[0].Room.ID)
+		}
+		if results[i].Created {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("%d requests allocated the match, want 1", created)
+	}
+}

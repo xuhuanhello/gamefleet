@@ -85,53 +85,26 @@ func New(router Router, dir *sites.Directory) *Service {
 }
 
 // Allocate returns the room for the match, allocating one only if the match
-// has none yet. Two concurrent first requests for the same match can still
-// both allocate; the unused room closes by itself when nobody joins it.
+// has none yet. It looks for the match in its region's cluster before it
+// reads the routes, so a retry finds its room even after the route moved or
+// went; and it looks while it holds the cluster's turn, so requests for one
+// match that overlap get one room.
 func (s *Service) Allocate(ctx context.Context, req Request) (Result, error) {
 	if err := req.validate(); err != nil {
 		return Result{}, err
 	}
-	target, err := s.router.Resolve(ctx, req.Game, req.Channel, req.Compat, req.Region)
-	if errors.Is(err, release.ErrNoRoute) {
+	// One cluster serves each region (clusters.Service refuses a second).
+	site, ok := s.sites.InRegion(req.Region)
+	if !ok {
 		return Result{}, ErrRouteNotFound
 	}
-	if err != nil {
-		return Result{}, err
-	}
-	site, ok := s.sites.Get(target.Cluster)
-	if !ok {
-		return Result{}, fmt.Errorf("%w: cluster %s is not configured", ErrUnavailable, target.Cluster)
-	}
-	c := site.Cluster
-
-	existing, err := c.FindByMatch(ctx, req.MatchID)
-	if err != nil {
-		return Result{}, mapError(err)
-	}
-	if existing != nil {
-		return Result{Room: *existing}, nil
-	}
-
 	players, err := json.Marshal(req.Players)
 	if err != nil {
 		return Result{}, err
 	}
-	allocation := cluster.Allocation{
-		Fleet:   target.Fleet,
-		MatchID: req.MatchID,
-		Game:    req.Game,
-		Channel: req.Channel,
-		Compat:  req.Compat,
-		Players: players,
-	}
 	contended, full := 0, 0
 	for {
-		done, err := s.turn(ctx, target.Cluster)
-		if err != nil {
-			return Result{}, err
-		}
-		room, err := c.Allocate(ctx, allocation)
-		done()
+		result, err := s.attempt(ctx, site, req, players)
 		var wait time.Duration
 		switch {
 		case errors.Is(err, cluster.ErrContention) && contended < 2:
@@ -141,11 +114,12 @@ func (s *Service) Allocate(ctx context.Context, req Request) (Result, error) {
 		case errors.Is(err, cluster.ErrNoCapacity) && full < 2:
 			full++
 			wait = time.Duration(full) * s.capacityWait
+		case errors.Is(err, release.ErrNoRoute):
+			return Result{}, ErrRouteNotFound
 		case err != nil:
 			return Result{}, mapError(err)
 		default:
-			room.Build = strconv.FormatInt(target.Build, 10)
-			return Result{Room: room, Created: true}, nil
+			return result, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -153,6 +127,43 @@ func (s *Service) Allocate(ctx context.Context, req Request) (Result, error) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// attempt looks for the match's room in the cluster, and allocates one when
+// there is none, all in one turn of the cluster.
+func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, players []byte) (Result, error) {
+	done, err := s.turn(ctx, site.Name)
+	if err != nil {
+		return Result{}, err
+	}
+	defer done()
+	existing, err := site.Cluster.FindByMatch(ctx, req.MatchID)
+	if err != nil {
+		return Result{}, err
+	}
+	if existing != nil {
+		return Result{Room: *existing}, nil
+	}
+	target, err := s.router.Resolve(ctx, req.Game, req.Channel, req.Compat, req.Region)
+	if err != nil {
+		return Result{}, err
+	}
+	if target.Cluster != site.Name {
+		return Result{}, fmt.Errorf("%w: the route for region %s names cluster %s, but %s serves it", ErrUnavailable, req.Region, target.Cluster, site.Name)
+	}
+	room, err := site.Cluster.Allocate(ctx, cluster.Allocation{
+		Fleet:   target.Fleet,
+		MatchID: req.MatchID,
+		Game:    req.Game,
+		Channel: req.Channel,
+		Compat:  req.Compat,
+		Players: players,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	room.Build = strconv.FormatInt(target.Build, 10)
+	return Result{Room: room, Created: true}, nil
 }
 
 // turn waits until no other allocation runs in the cluster. Call the function
