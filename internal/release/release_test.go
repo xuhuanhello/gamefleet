@@ -530,6 +530,7 @@ func TestUndeployLosesToARollback(t *testing.T) {
 	f := newFixture(t)
 	d141, _ := promoted(t, f)
 	ctx := context.Background()
+	f.us.AddRoom(cluster.Room{ID: "back", Fleet: d141.Fleet, State: "Ready", Capacity: 50})
 	f.now = f.now.Add(UndeployWait)
 	f.svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &hooked{Fake: f.us, during: func() {
 		if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); err != nil {
@@ -541,6 +542,9 @@ func TestUndeployLosesToARollback(t *testing.T) {
 	}
 	if _, _, ok := f.us.ManagedFleet(d141.Fleet); !ok || f.state(t, d141.ID) != store.StateServing {
 		t.Fatal("the rolled-back deployment lost its fleet")
+	}
+	if room, _ := f.us.Get(ctx, "back"); room == nil {
+		t.Fatal("the rolled-back deployment lost its game servers")
 	}
 }
 

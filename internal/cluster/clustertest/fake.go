@@ -457,6 +457,12 @@ func (f *Fake) DeleteFleet(_ context.Context, name string) error {
 		return f.err
 	}
 	delete(f.fleets, name)
+	// As in a cluster, the Fleet's game servers go with it, matches and all.
+	for id, r := range f.rooms {
+		if r.Fleet == name {
+			delete(f.rooms, id)
+		}
+	}
 	return nil
 }
 
