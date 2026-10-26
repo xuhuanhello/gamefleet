@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -196,6 +197,41 @@ func TestDownloadAndApplyWriteRequests(t *testing.T) {
 	backups, _ := os.ReadDir(s.o.BackupDir)
 	if len(backups) != 1 || !strings.HasPrefix(backups[0].Name(), "gamefleet-2.0.0-") {
 		t.Fatalf("backups = %v", backups)
+	}
+	// The request names the backup, for the updater to point at if the
+	// update fails.
+	var apply map[string]any
+	if json.Unmarshal(data, &apply) != nil || apply["backup"] != backups[0].Name() {
+		t.Fatalf("apply request = %s, backup %s", data, backups[0].Name())
+	}
+}
+
+// Requests sent at the same time, from two tabs say, get one through.
+func TestOneRequestAtATime(t *testing.T) {
+	s, _ := newService(t, "2.0.0", "")
+	const n = 20
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- s.Download("2.1.0")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	accepted := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			accepted++
+		case !errors.Is(err, ErrBusy):
+			t.Fatal(err)
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("%d requests accepted, want 1", accepted)
 	}
 }
 

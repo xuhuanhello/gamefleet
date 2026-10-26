@@ -115,6 +115,10 @@ type Service struct {
 	mu       sync.Mutex
 	last     Check
 	checking bool // a CheckSoon is running
+
+	// asking lets one request at a time through the check that the updater
+	// is idle and into request.json.
+	asking sync.Mutex
 }
 
 // New makes the service. GameFleet asks GitHub only when someone uses the
@@ -374,12 +378,17 @@ func (s *Service) progress() (done, total int64) {
 
 // Download asks the updater to pull the release's image.
 func (s *Service) Download(v string) error {
-	return s.ask("download", v)
+	s.asking.Lock()
+	defer s.asking.Unlock()
+	return s.ask("download", v, "")
 }
 
 // Apply backs the database up and asks the updater to put the downloaded
-// release in place, which restarts GameFleet.
+// release in place, which restarts GameFleet. The request names the backup,
+// so that the updater can say which one to restore if the update fails.
 func (s *Service) Apply(ctx context.Context, v string) error {
+	s.asking.Lock()
+	defer s.asking.Unlock()
 	if err := s.check(v); err != nil {
 		return err
 	}
@@ -391,7 +400,7 @@ func (s *Service) Apply(ctx context.Context, v string) error {
 		return fmt.Errorf("backing the database up: %w", err)
 	}
 	s.prune()
-	return s.ask("apply", v)
+	return s.ask("apply", v, name)
 }
 
 // prune keeps the newest five backups.
@@ -445,11 +454,16 @@ func (s *Service) check(v string) error {
 	return nil
 }
 
-func (s *Service) ask(action, v string) error {
+// ask writes a request for the updater. Callers hold asking.
+func (s *Service) ask(action, v, backup string) error {
 	if err := s.check(v); err != nil {
 		return err
 	}
-	data, err := json.Marshal(map[string]any{"action": action, "version": strings.TrimPrefix(v, "v"), "at": s.now().UTC()})
+	req := map[string]any{"action": action, "version": strings.TrimPrefix(v, "v"), "at": s.now().UTC()}
+	if backup != "" {
+		req["backup"] = backup
+	}
+	data, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}

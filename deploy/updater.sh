@@ -11,7 +11,7 @@
 set -u
 cd "$(dirname "$0")"
 dir=update
-action='' version=''
+action='' version='' backup=''
 
 status() {
 	printf '{"action":"%s","version":"%s","state":"%s","error":"%s","at":"%s"}\n' \
@@ -75,29 +75,59 @@ apply() {
 	# Back to the version that ran before, with its own deploy files when it
 	# carries them.
 	deploy_files "$previous" || true
-	GAMEFLEET_UPDATER=1 sh install.sh --domain "$domain" --email "$email" --image "$previous" >>"$dir/apply.log" 2>&1
-	status failed "新版本没有启动起来，已经回到原来的版本。经过见管理机的 /opt/gamefleet/update/apply.log"
+	if GAMEFLEET_UPDATER=1 sh install.sh --domain "$domain" --email "$email" --image "$previous" >>"$dir/apply.log" 2>&1; then
+		status failed "新版本没有启动起来，已经回到原来的版本。经过见管理机的 /opt/gamefleet/update/apply.log"
+		return
+	fi
+	# The new version may have changed the database, which the old one then
+	# refuses: it needs the backup made before the update.
+	restore='按安装文档“备份和恢复”换回更新前的数据库，再用原来的版本运行安装脚本'
+	[ -z "$backup" ] || restore="${restore}。更新前的数据库备份是 GameFleet 数据卷里的 backups/${backup}"
+	status failed "新版本没有启动起来，换回原来的版本也没有成功，GameFleet 现在可能没在运行。${restore}。经过见管理机的 /opt/gamefleet/update/apply.log"
 }
 
 repo=$(setting GAMEFLEET_IMAGE_REPO)
 [ -n "$repo" ] || repo=ghcr.io/xuhuanhello/gamefleet
 mkdir -p "$dir"
+
+# A download or an update that was under way when this script stopped, with
+# the machine restarting say, did not finish; GameFleet would wait for it for
+# ever. Say so, and take requests again.
+if [ -f "$dir/status.json" ]; then
+	state=$(sed -n 's/.*"state":"\([a-z]*\)".*/\1/p' "$dir/status.json")
+	if [ "$state" = downloading ] || [ "$state" = applying ]; then
+		action=$(sed -n 's/.*"action":"\([a-z]*\)".*/\1/p' "$dir/status.json")
+		version=$(sed -n 's/.*"version":"\([0-9.]*\)".*/\1/p' "$dir/status.json")
+		status failed "更新器做到一半停了（比如管理机重启了），这次没有做完，可以再试一次"
+	fi
+fi
+
 while :; do
 	if [ -f "$dir/request.json" ]; then
 		action=$(sed -n 's/.*"action": *"\([a-z]*\)".*/\1/p' "$dir/request.json")
 		version=$(sed -n 's/.*"version": *"\([0-9.]*\)".*/\1/p' "$dir/request.json")
-		rm -f "$dir/request.json"
+		backup=$(sed -n 's/.*"backup": *"\([A-Za-z0-9._-]*\)".*/\1/p' "$dir/request.json")
 		image="$repo:$version"
+		# Say busy before the request goes, so that GameFleet, which counts a
+		# waiting request as busy too, never sees the updater idle in between.
 		if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
 			status failed "请求里的版本号不对"
+			action=''
 		elif [ "$action" = download ]; then
+			status downloading
+		elif [ "$action" = apply ]; then
+			status applying
+		else
+			status failed "不认识的请求"
+			action=''
+		fi
+		rm -f "$dir/request.json"
+		if [ "$action" = download ]; then
 			download
 		elif [ "$action" = apply ]; then
 			apply
 			# systemd starts this script again, from the version just put in place.
 			exit 0
-		else
-			status failed "不认识的请求"
 		fi
 	fi
 	sleep 2
