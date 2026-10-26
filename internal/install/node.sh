@@ -32,7 +32,9 @@ case "$server" in https://*) ;; *) fail "--server 要是集群的 https 地址�
 [ "$(uname -m)" = x86_64 ] || fail "只支持 x86_64 的机器"
 command -v systemctl >/dev/null || fail "需要 systemd"
 command -v curl >/dev/null || fail "需要 curl"
-[ ! -e /usr/local/bin/k3s ] || fail "这台机器已经装了 K3s，请先执行 k3s-agent-uninstall.sh"
+# A run that stopped after K3s was installed, waiting for the machine to get
+# ready say, leaves it installed: it is removed by hand before trying again.
+[ ! -e /usr/local/bin/k3s ] || fail "这台机器已经装了 K3s，可能是上次加入到一半停下了。先在这台机器上执行 /usr/local/bin/k3s-agent-uninstall.sh，再重试"
 
 if [ -z "$public_ip" ]; then
 	public_ip=$(curl -sf --max-time 10 "$GAMEFLEET/install/ip") || fail "查不到这台机器的公网 IP，请加上 --public-ip"

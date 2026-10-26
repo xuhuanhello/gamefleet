@@ -75,12 +75,21 @@ echo "$public_ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || fail "公网 
 say "在 $public_ip 上安装集群 $name（地区 $region）"
 
 MANIFESTS=/var/lib/rancher/k3s/server/manifests
+# An earlier run wrote the config before it installed K3s, and may have
+# stopped in between, a download failing say. It counts as installed only
+# when the binary and the service are there too; otherwise the installer
+# runs again, with the config, and the join token, of the earlier run.
+configured='' installed=''
 if grep -q '^# gamefleet cluster' "$CONFIG" 2>/dev/null; then
-	say "上次已经装过 K3s，接着往下装"
-	resume=1
+	configured=1
+	if [ -x /usr/local/bin/k3s ] && [ -f /etc/systemd/system/k3s.service ]; then
+		installed=1
+		say "上次已经装过 K3s，接着往下装"
+	else
+		say "上次写好了配置，K3s 没装完，这次接着装"
+	fi
 else
 	[ ! -e /usr/local/bin/k3s ] || fail "这台机器已经装了别的 K3s，请先执行 k3s-uninstall.sh"
-	resume=''
 fi
 
 # K3s applies every file in this directory when it starts and again when one
@@ -185,7 +194,7 @@ network_check() {
 # join with, and K3s restarts when it changed.
 private_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
 echo "$private_ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || fail "查不到这台机器的内网 IP（ip route get 1.1.1.1）"
-if [ -n "$resume" ]; then
+if [ -n "$configured" ]; then
 	agent_token=$(sed -n 's/^agent-token: //p' "$CONFIG")
 else
 	# A separate token for machines that join later, so it cannot make servers.
@@ -221,7 +230,7 @@ if ! cmp -s /tmp/gamefleet-k3s.yaml "$CONFIG"; then
 fi
 rm -f /tmp/gamefleet-k3s.yaml
 
-if [ -z "$resume" ]; then
+if [ -z "$installed" ]; then
 	status k3s 0 3 "下载并安装 K3s $K3S_VERSION"
 	curl -sfL --max-time 60 https://get.k3s.io -o /tmp/k3s-install.sh || fail "下载不了 K3s 的安装脚本（get.k3s.io）"
 	# The installer would start K3s and wait for it, forever when it cannot
