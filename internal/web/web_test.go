@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -298,21 +299,27 @@ func TestOverview(t *testing.T) {
 // The overview's first line says what needs attention.
 func TestOverviewFinding(t *testing.T) {
 	healthy := cluster.Node{Name: worker, Ready: true, Allocatable: cluster.Resources{MilliCPU: 2000, Memory: 2 << 30}}
+	unreadable := errors.New("connection reset")
 	cases := map[string]struct {
-		nodes []cluster.Node
+		view  clustertest.View
 		ready bool
 		want  string
 	}{
-		"all good":     {[]cluster.Node{healthy}, true, "一切正常，现在还能立刻开 99 局。"},
-		"no idle room": {[]cluster.Node{healthy}, false, "战斗服都满了，新的对局会分配失败。"},
-		"node down":    {[]cluster.Node{healthy, {Name: "us-2", Ready: false}}, true, "1 台机器失联：us-2。"},
+		"all good":     {clustertest.View{Nodes: []cluster.Node{healthy}}, true, "一切正常，现在还能立刻开 99 局。"},
+		"no idle room": {clustertest.View{Nodes: []cluster.Node{healthy}}, false, "战斗服都满了，新的对局会分配失败。"},
+		"node down":    {clustertest.View{Nodes: []cluster.Node{healthy, {Name: "us-2", Ready: false}}}, true, "1 台机器失联：us-2。"},
+		// What could not be read is not taken as fine.
+		"events unreadable": {clustertest.View{Nodes: []cluster.Node{healthy}, EventsErr: unreadable}, true,
+			"能开局，但读不到警告（connection reset），没法确认一切正常。"},
+		"pods unreadable": {clustertest.View{Nodes: []cluster.Node{healthy}, PodsErr: unreadable, EventsErr: unreadable}, true,
+			"能开局，但读不到系统组件和警告（connection reset），没法确认一切正常。"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			e.signIn(t)
 			e.serve(t)
-			e.fake.SetView(clustertest.View{Nodes: tc.nodes})
+			e.fake.SetView(tc.view)
 			if !tc.ready {
 				for _, id := range []string{"billiards-a", "billiards-b"} {
 					e.fake.AddRoom(cluster.Room{ID: id, State: "Allocated", Node: worker, Capacity: 1, Matches: []cluster.Match{{ID: "m-" + id}}})

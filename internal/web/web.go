@@ -6,6 +6,7 @@ package web
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"embed"
 	"encoding/json"
@@ -474,11 +475,22 @@ func (c *Console) summarize(ctx context.Context, s Site, st releaseState) cluste
 		return sum
 	}
 	usage, usageErr := s.Cluster.Usage(ctx)
-	// Events and pods are extra: without them the overview just counts no
-	// warnings and no stuck components.
-	events, _ := s.Cluster.Events(ctx, "", "")
-	pods, _ := s.Cluster.Pods(ctx, "")
+	// Events and pods are extra: without them the overview still counts
+	// matches, but cannot say that nothing else is wrong.
+	events, eventsErr := s.Cluster.Events(ctx, "", "")
+	pods, podsErr := s.Cluster.Pods(ctx, "")
 	broken := c.stuck(c.components(pods, s.Cluster.Namespace(), cluster.Usage{}))
+	var unread []string
+	var unreadErr error
+	for _, r := range []struct {
+		what string
+		err  error
+	}{{"系统组件", podsErr}, {"警告", eventsErr}} {
+		if r.err != nil {
+			unread = append(unread, r.what)
+			unreadErr = cmp.Or(unreadErr, r.err)
+		}
+	}
 
 	var used, total cluster.Resources
 	var down []string
@@ -515,6 +527,8 @@ func (c *Console) summarize(ctx context.Context, s Site, st releaseState) cluste
 		sum.Finding = finding{"bad", fmt.Sprintf("系统组件没有就绪：%s。集群可能开不了局，到集群页看系统组件。", strings.Join(broken, "、"))}
 	case sum.Ready == 0:
 		sum.Finding = finding{"bad", "战斗服都满了，新的对局会分配失败。"}
+	case len(unread) > 0:
+		sum.Finding = finding{"warn", fmt.Sprintf("能开局，但读不到%s（%v），没法确认一切正常。", strings.Join(unread, "和"), unreadErr)}
 	case sum.Warnings > 0:
 		sum.Finding = finding{"warn", fmt.Sprintf("能开局，但最近一小时有 %d 条警告。", sum.Warnings)}
 	default:

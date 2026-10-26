@@ -53,6 +53,8 @@ type View struct {
 	Logs     map[string]string
 	Usage    cluster.Usage
 	UsageErr error
+	// EventsErr and PodsErr fail Events and Pods alone.
+	EventsErr, PodsErr error
 }
 
 // Namespace is the fake's game namespace.
@@ -297,6 +299,9 @@ func (f *Fake) Pods(_ context.Context, node string) ([]cluster.Pod, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
+	if f.view.PodsErr != nil {
+		return nil, f.view.PodsErr
+	}
 	pods := []cluster.Pod{}
 	for _, p := range f.view.Pods {
 		if node == "" || p.Node == node {
@@ -345,6 +350,9 @@ func (f *Fake) Events(_ context.Context, namespace, object string) ([]cluster.Ev
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.view.EventsErr != nil {
+		return nil, f.view.EventsErr
 	}
 	events := []cluster.Event{}
 	for _, e := range f.view.Events {
