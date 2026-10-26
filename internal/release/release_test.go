@@ -424,3 +424,47 @@ func TestDeployChecks(t *testing.T) {
 		t.Errorf("defaults = %+v, %v", defaults, err)
 	}
 }
+
+// A route moves only to a build deployed in every cluster that its current
+// build serves: elsewhere that region's players would get no game server.
+func TestRouteKeepsEveryCluster(t *testing.T) {
+	f := newFixture(t)
+	f.svc.sites.Add(sites.Site{Name: "sg-1", Region: "sg", Cluster: clustertest.New("sg-1", 0)})
+	ctx := context.Background()
+	deployTo := func(b store.Build, clusterName string) {
+		t.Helper()
+		req := DeployRequest{BuildID: b.ID, Cluster: clusterName, Buffer: 2, MaxReplicas: 10, Rooms: 50, Resources: Defaults.Resources}
+		if _, err := f.svc.Deploy(ctx, req, "admin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := f.register(t, "141")
+	deployTo(old, "us-1")
+	deployTo(old, "sg-1")
+	if err := f.svc.SetRoute(ctx, Stable, old.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	next := f.register(t, "142")
+	deployTo(next, "us-1")
+	if err := f.svc.SetRoute(ctx, Canary, next.ID, "admin"); err != nil {
+		t.Fatalf("a new canary route has nothing to keep: %v", err)
+	}
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("promoting a build missing from sg-1: err = %v, want ErrConflict", err)
+	}
+	if err := f.svc.SetRoute(ctx, Stable, next.ID, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("pointing stable at a build missing from sg-1: err = %v, want ErrConflict", err)
+	}
+	var stable store.Route
+	if err := f.store.View(ctx, func(tx *store.Tx) error {
+		var err error
+		stable, err = tx.Route("billiards", Stable, "net7")
+		return err
+	}); err != nil || stable.BuildID != old.ID {
+		t.Fatalf("stable = %+v, %v; want it left on #%d", stable, err, old.ID)
+	}
+	deployTo(next, "sg-1")
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); err != nil {
+		t.Fatalf("promoting once sg-1 has the build: %v", err)
+	}
+}

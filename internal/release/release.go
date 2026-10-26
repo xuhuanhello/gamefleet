@@ -388,6 +388,11 @@ func (s *Service) route(ctx context.Context, action, channel string, buildID int
 		case !errors.Is(err, store.ErrNotFound):
 			return err
 		}
+		if r.PreviousBuildID != 0 {
+			if err := s.keepsClusters(tx, b, live, r.PreviousBuildID); err != nil {
+				return err
+			}
+		}
 		if err := tx.PutRoute(r); err != nil {
 			return err
 		}
@@ -407,6 +412,30 @@ func (s *Service) route(ctx context.Context, action, channel string, buildID int
 		s.Kick()
 	}
 	return err
+}
+
+// keepsClusters refuses to move a route onto a build that is missing from a
+// cluster the route's current build is deployed in: that region's players
+// would get no game server.
+func (s *Service) keepsClusters(tx *store.Tx, b store.Build, live []store.Deployment, fromBuildID int64) error {
+	from, err := liveDeploymentsOf(tx, fromBuildID)
+	if err != nil {
+		return err
+	}
+	has := map[string]bool{}
+	for _, d := range live {
+		has[d.Cluster] = true
+	}
+	var missing []string
+	for _, d := range from {
+		if _, configured := s.site(d.Cluster); configured && !has[d.Cluster] {
+			missing = append(missing, d.Cluster)
+		}
+	}
+	if len(missing) > 0 {
+		return conflict("%s 没有部署在 %s，切过去以后那里的玩家分不到战斗服。先把它部署到那里", buildName(b), strings.Join(missing, "、"))
+	}
+	return nil
 }
 
 // endCanaryLikeStable deletes the canary route of the build's compat version
