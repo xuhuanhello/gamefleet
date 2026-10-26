@@ -46,6 +46,20 @@ type Remote struct {
 	Ended       time.Time
 }
 
+// auditRun writes the audit entry of a run over SSH. The run has happened
+// either way, so a failure to write it goes into the run's log, which its
+// page shows, and into GameFleet's.
+func (s *Service) auditRun(ctx context.Context, r *Remote, actor, action, target, detail string) {
+	err := s.audit(ctx, actor, action, target, detail)
+	if err == nil {
+		return
+	}
+	s.log.Error("audit failed", "action", action, "target", target, "error", err)
+	s.mu.Lock()
+	r.Log = append(r.Log, "GameFleet：审计日志没记上这次操作："+err.Error())
+	s.mu.Unlock()
+}
+
 func (r *Remote) snapshot() Remote {
 	c := *r
 	c.Log = slices.Clone(r.Log)
@@ -179,7 +193,7 @@ func (s *Service) runJoin(id string) {
 	if err != nil {
 		result = "失败：" + err.Error()
 	}
-	_ = s.audit(context.Background(), by, "cluster.install", name,
+	s.auditRun(context.Background(), r, by, "cluster.install", name,
 		fmt.Sprintf("通过 SSH 在 %s@%s 上安装，%s；主机指纹 %s", target.User, target.Host, result, orDash(fingerprint)))
 	s.mu.Lock()
 	if j.Stage == StageDone {
@@ -317,7 +331,7 @@ func (s *Service) runNode(id string) {
 	fingerprint, err := s.execute(r, target, withCurl(s.JoinCommand(stored)))
 	if err != nil {
 		s.nodeFailed(n, "%s", err.Error())
-		_ = s.audit(ctx, by, "node.install", target.Host+" @ "+clusterName,
+		s.auditRun(ctx, r, by, "node.install", target.Host+" @ "+clusterName,
 			fmt.Sprintf("通过 SSH 加入失败；主机指纹 %s", orDash(fingerprint)))
 		return
 	}
@@ -339,7 +353,7 @@ func (s *Service) runNode(id string) {
 			s.mu.Lock()
 			n.Stage, n.Node, n.target = NodeDone, name, nil
 			s.mu.Unlock()
-			_ = s.audit(ctx, by, "node.add", name+" @ "+clusterName,
+			s.auditRun(ctx, r, by, "node.add", name+" @ "+clusterName,
 				fmt.Sprintf("通过 SSH 在 %s@%s 上安装%s；主机指纹 %s", target.User, target.Host, named, orDash(fingerprint)))
 			return
 		}

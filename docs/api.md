@@ -27,9 +27,11 @@ GameFleet 对外只有一个地址，比如 `https://fleet.example.com`：控制
 | `POST /api/v1/allocations` | `allocate` | `201` 和分到的战斗服；同一个 matchId 再要一次，返回 `200` 和同一个战斗服 |
 | `GET /api/v1/rooms/{名字}` | `allocate`、`gm` | 这个战斗服，或者 `404 room_not_found` |
 | `GET /api/v1/rooms?matchId=` | `allocate`、`gm` | `{"rooms": [...]}`，零个或一个：跑这一局的战斗服 |
-| `POST /api/v1/matches/{matchId}/end` | `gm` | 让跑这一局的战斗服结束它，返回 `202` 和 `{"roomId", "matchId"}`；没有战斗服在跑时返回 `404 room_not_found`。见[战斗服约定](game-server.md#被要求结束一局) |
-| `DELETE /api/v1/rooms/{名字}` | `gm` | 删掉这个战斗服，返回 `202`。上面所有的对局都没了 |
+| `POST /api/v1/matches/{matchId}/end` | `gm` | 让跑这一局的战斗服结束它，返回 `202` 和 `{"roomId", "matchId", "audited"}`；没有战斗服在跑时返回 `404 room_not_found`。见[战斗服约定](game-server.md#被要求结束一局) |
+| `DELETE /api/v1/rooms/{名字}` | `gm` | 删掉这个战斗服，返回 `202` 和 `{"roomId", "audited"}`。上面所有的对局都没了 |
 | `/v2/…` | `push`、`pull` | 镜像仓库协议。GameFleet 检查 key 后转给后面的 registry |
+
+GM 接口返回 `202` 就是已经做了。`audited` 是 `false` 时，事情照样做了，只是审计日志没记上（比如管理机的盘满了）：不要因此重试，看一下管理机。
 
 ### 登记构建
 

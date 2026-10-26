@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -53,6 +54,13 @@ func image(digest, version string, labels ...string) registry.Image {
 // newServer runs the API with build 1 deployed in us-1 and routed on stable.
 func newServer(t *testing.T, ready int) (*httptest.Server, *clustertest.Fake) {
 	t.Helper()
+	return newServerWith(t, ready, func(r Releases) Releases { return r })
+}
+
+// newServerWith is newServer with the releases the API sees passed through
+// wrap.
+func newServerWith(t *testing.T, ready int, wrap func(Releases) Releases) (*httptest.Server, *clustertest.Fake) {
+	t.Helper()
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "gamefleet.db"))
 	if err != nil {
@@ -86,7 +94,7 @@ func newServer(t *testing.T, ready int) (*httptest.Server, *clustertest.Fake) {
 		t.Fatal(err)
 	}
 	svc := allocate.New(releases, dir)
-	server := httptest.NewServer(Handler(svc, releases, keys, log))
+	server := httptest.NewServer(Handler(svc, wrap(releases), keys, log))
 	t.Cleanup(server.Close)
 	return server, fake
 }
@@ -234,6 +242,32 @@ func TestEndOneMatch(t *testing.T) {
 	}
 	if status, out := call(t, server, http.MethodPost, "/api/v1/matches/m-9/end", gmKey, ""); status != http.StatusNotFound || out["error"] != "room_not_found" {
 		t.Fatalf("unknown match: %d %v", status, out)
+	}
+}
+
+// unaudited is releases with an audit log that cannot be written.
+type unaudited struct{ Releases }
+
+func (unaudited) Record(context.Context, string, string, string, string) error {
+	return errors.New("disk full")
+}
+
+// A GM action that happened is answered as done, saying whether the audit
+// log has it.
+func TestGMActionsSayWhetherTheyWereAudited(t *testing.T) {
+	for _, audit := range []bool{true, false} {
+		wrap := func(r Releases) Releases { return r }
+		if !audit {
+			wrap = func(r Releases) Releases { return unaudited{r} }
+		}
+		server, _ := newServerWith(t, 2, wrap)
+		_, first := call(t, server, http.MethodPost, "/api/v1/allocations", nakamaKey, match)
+		if status, out := call(t, server, http.MethodPost, "/api/v1/matches/m-1/end", gmKey, ""); status != http.StatusAccepted || out["audited"] != audit {
+			t.Fatalf("audit log works %v: end = %d %v", audit, status, out)
+		}
+		if status, out := call(t, server, http.MethodDelete, "/api/v1/rooms/"+first["roomId"].(string), gmKey, ""); status != http.StatusAccepted || out["audited"] != audit {
+			t.Fatalf("audit log works %v: shutdown = %d %v", audit, status, out)
+		}
 	}
 }
 

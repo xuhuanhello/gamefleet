@@ -440,7 +440,7 @@ func (s *Service) Retire(ctx context.Context, clusterName, node, actor string) e
 		return err
 	}
 	s.Kick()
-	return s.audit(ctx, actor, "node.retire", node+" @ "+clusterName, "")
+	return doneButNotAudited("已经开始下线", s.audit(ctx, actor, "node.retire", node+" @ "+clusterName, ""))
 }
 
 // maxTitle is the longest name a machine may be given, in characters.
@@ -479,7 +479,7 @@ func (s *Service) Rename(ctx context.Context, clusterName, node, title, actor st
 	if title == "" {
 		detail = "去掉名称，显示节点名"
 	}
-	return s.audit(ctx, actor, "node.rename", node+" @ "+clusterName, detail)
+	return doneButNotAudited("已经改好名字", s.audit(ctx, actor, "node.rename", node+" @ "+clusterName, detail))
 }
 
 // Keep cancels a retirement that has not finished yet. It waits for a pass
@@ -510,7 +510,7 @@ func (s *Service) Keep(ctx context.Context, clusterName, node, actor string) err
 			}
 		}
 	}
-	return s.audit(ctx, actor, "node.keep", node+" @ "+clusterName, "")
+	return doneButNotAudited("已经取消下线", s.audit(ctx, actor, "node.keep", node+" @ "+clusterName, ""))
 }
 
 func (s *Service) node(ctx context.Context, clusterName, node string) (sites.Site, cluster.Node, error) {
@@ -627,6 +627,16 @@ func (s *Service) applyVars(ctx context.Context, api cluster.API) error {
 		}
 	}
 	return nil
+}
+
+// doneButNotAudited tells an operator that what they asked for happened in
+// the cluster, but its audit entry could not be written: the error alone
+// would read as if nothing had happened.
+func doneButNotAudited(done string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s，但审计日志没记上：%w", done, err)
 }
 
 func (s *Service) audit(ctx context.Context, actor, action, target, detail string) error {

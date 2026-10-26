@@ -186,10 +186,8 @@ func (h *handler) shutdown(w http.ResponseWriter, r *http.Request, caller auth.C
 		return
 	}
 	h.log.Info("room shutdown", "caller", caller.Name, "room", id)
-	if err := h.releases.Record(r.Context(), caller.Actor(), "room.shutdown", id, ""); err != nil {
-		h.log.Error("audit failed", "error", err)
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"roomId": id})
+	audited := h.record(r.Context(), caller, "room.shutdown", id, "")
+	writeJSON(w, http.StatusAccepted, map[string]any{"roomId": id, "audited": audited})
 }
 
 func (h *handler) endMatch(w http.ResponseWriter, r *http.Request, caller auth.Caller) {
@@ -204,10 +202,19 @@ func (h *handler) endMatch(w http.ResponseWriter, r *http.Request, caller auth.C
 		return
 	}
 	h.log.Info("match end", "caller", caller.Name, "matchId", matchID, "room", room.ID)
-	if err := h.releases.Record(r.Context(), caller.Actor(), "match.end", matchID, room.ID); err != nil {
-		h.log.Error("audit failed", "error", err)
+	audited := h.record(r.Context(), caller, "match.end", matchID, room.ID)
+	writeJSON(w, http.StatusAccepted, map[string]any{"roomId": room.ID, "matchId": matchID, "audited": audited})
+}
+
+// record writes the audit entry of a GM action that has happened in the
+// cluster. The action stands either way; the caller learns from the answer
+// whether the audit log has it.
+func (h *handler) record(ctx context.Context, caller auth.Caller, action, target, detail string) bool {
+	if err := h.releases.Record(ctx, caller.Actor(), action, target, detail); err != nil {
+		h.log.Error("audit failed", "caller", caller.Name, "action", action, "target", target, "error", err)
+		return false
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"roomId": room.ID, "matchId": matchID})
+	return true
 }
 
 // fail maps service errors onto status codes and error codes.
