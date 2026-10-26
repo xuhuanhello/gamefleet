@@ -241,4 +241,27 @@ func TestRuntimeVars(t *testing.T) {
 	if err := f.svc.DeleteVar(ctx, "billiards", "NOPE", "admin"); err == nil {
 		t.Error("deleting a missing variable")
 	}
+	// Deleting a variable takes it out of the Secret, and deleting the last
+	// one leaves the Secret of a game with builds empty rather than holding
+	// the old values.
+	if err := f.store.Update(ctx, func(tx *store.Tx) error {
+		_, err := tx.InsertBuild(store.Build{Game: "billiards", Digest: "sha256:aaa", Tag: "141", Compat: "net7", Port: 7770, Protocol: "UDP", RegisteredBy: "key:ci"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"NAKAMA_URL", "NAKAMA_HTTP_KEY"} {
+		if err := f.svc.DeleteVar(ctx, "billiards", key, "admin"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.svc.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if s, ok := us.Secret("billiards-runtime"); !ok || s.Data[key] != nil {
+			t.Fatalf("after deleting %s: secret = %+v, %v", key, s, ok)
+		}
+	}
+	if s, _ := us.Secret("billiards-runtime"); len(s.Data) != 0 {
+		t.Fatalf("secret after deleting every variable = %+v", s)
+	}
 }

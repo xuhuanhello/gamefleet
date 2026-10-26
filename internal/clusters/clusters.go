@@ -561,8 +561,8 @@ func SaveVar(ctx context.Context, db *store.Store, game, key, value, actor strin
 	})
 }
 
-// DeleteVar removes a variable from the game's settings. It stays in the
-// Secrets until someone deletes it there; game servers ignore it.
+// DeleteVar removes a variable from the game's settings. The loop takes it
+// out of the Secrets within Interval; game servers that already run keep it.
 func (s *Service) DeleteVar(ctx context.Context, game, key, actor string) error {
 	err := s.store.Update(ctx, func(tx *store.Tx) error {
 		if err := tx.DeleteVar(game, key); err != nil {
@@ -589,22 +589,32 @@ func (s *Service) Vars(ctx context.Context) ([]store.Var, error) {
 }
 
 // applyVars writes each game's settings into the cluster as <game>-runtime.
+// Every game with a build gets its Secret, an empty one when it has no
+// settings: GameFleet owns the keys it writes, so a Secret written without a
+// key loses it, and a deleted last variable leaves no old value behind.
 func (s *Service) applyVars(ctx context.Context, api cluster.API) error {
-	vars, err := s.Vars(ctx)
+	var games []string
+	var vars []store.Var
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		var err error
+		if games, err = tx.RuntimeGames(); err != nil {
+			return err
+		}
+		vars, err = tx.Vars("")
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	secrets := map[string]cluster.Secret{}
-	for _, v := range vars {
-		sec, ok := secrets[v.Game]
-		if !ok {
-			sec = cluster.Secret{Name: v.Game + cluster.RuntimeSecretSuffix, Data: map[string][]byte{}}
-			secrets[v.Game] = sec
-		}
-		sec.Data[v.Name] = []byte(v.Value)
+	data := map[string]map[string][]byte{}
+	for _, game := range games {
+		data[game] = map[string][]byte{}
 	}
-	for _, sec := range secrets {
-		if err := api.ApplySecret(ctx, sec); err != nil {
+	for _, v := range vars {
+		data[v.Game][v.Name] = []byte(v.Value)
+	}
+	for _, game := range games {
+		if err := api.ApplySecret(ctx, cluster.Secret{Name: game + cluster.RuntimeSecretSuffix, Data: data[game]}); err != nil {
 			return err
 		}
 	}

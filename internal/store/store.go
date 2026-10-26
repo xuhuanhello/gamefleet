@@ -614,6 +614,20 @@ func (t *Tx) Vars(game string) ([]Var, error) {
 	})
 }
 
+// RuntimeGames lists the games whose game servers load runtime settings, by
+// name: every game with a build or a variable.
+func (t *Tx) RuntimeGames() ([]string, error) {
+	rows, err := t.tx.QueryContext(t.ctx, `SELECT game FROM builds UNION SELECT game FROM runtime_vars ORDER BY game`)
+	if err != nil {
+		return nil, err
+	}
+	return collect(rows, func(row scanner) (string, error) {
+		var game string
+		err := row.Scan(&game)
+		return game, err
+	})
+}
+
 // PutVar creates or replaces a variable as of the transaction's time.
 func (t *Tx) PutVar(v Var) error {
 	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runtime_vars (game, name, value, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)
