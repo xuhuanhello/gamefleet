@@ -138,7 +138,7 @@ curl -H "Authorization: Bearer $KEY" "https://fleet.example.com/api/v1/logs/game
 **去掉了什么：**
 
 - **GameFleet 知道的密钥：** 运行时配置的每个值、集群的 token，日志里原样出现的地方换成名字，比如 `[runtime:billiards:TICKET_KEY]`。有多行的值（比如 PEM 私钥）每一行也单独换。少于 8 个字符的值不换，它们多半不是密钥。
-- **长得像凭证的：** JWT 换成 `[token]`；`Bearer …`、`password=…`、`"token": "…"`、`secret='…'`、`--token …`，名字里带 password、secret、token、key、ticket、signature 的值换成 `[hidden]`，带引号的换到引号结束。名字里带 key 的不一定是密钥（比如 key 的名字），也一起换掉。
+- **长得像凭证的：** JWT 换成 `[token]`；`Bearer …`、`password=…`、`"token": "…"`、`secret='…'`、`--token …`，名字里带 password、secret、token、key、ticket、signature 的值换成 `[hidden]`，带引号的换到引号结束，没有结束引号的换到行尾。名字里带 key 的不一定是密钥（比如 key 的名字），也一起换掉。
 - **玩家的地址和邮箱：** 公网 IP 换成 `ip#3f2a9c`，邮箱换成 `email#91c0d2`。同一个值在 GameFleet 这次运行期间总是同一个代号，所以还看得出"同一个客户端断了又连"；GameFleet 重启后代号会变。内网地址（`10.x`、`172.16–31.x`、`192.168.x`、`100.64.x`）不换，它们是机器和 pod 的地址。
 - 控制字符和终端转义序列去掉；一行最多 2000 字节，多的截掉。
 

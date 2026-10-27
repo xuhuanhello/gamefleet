@@ -40,9 +40,11 @@ var (
 	scheme = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	// A value named like a credential: password=…, "token": "…", ?key=…,
 	// secret='…'. Any name with "key" in it counts, though it hides some
-	// that are none. A quoted value is hidden to its closing quote. Neither
-	// rule takes a known secret's marker (NUL), which keeps its name.
-	named = regexp.MustCompile(`(?i)([a-z0-9_.-]*(?:password|passwd|secret|token|key|credential|signature|ticket)[a-z0-9_.-]*['"]?\s*[=:]\s*)('[^'\x00]*'|"[^"\x00]*"|['"]?[^\s"',;&}\x00]+)`)
+	// that are none. A quoted value is hidden to its closing quote, past
+	// escaped ones, and one with no closing quote to the end of the line. A
+	// known secret's marker in it stays, so that it shows its name.
+	named  = regexp.MustCompile(`(?i)([a-z0-9_.-]*(?:password|passwd|secret|token|key|credential|signature|ticket)[a-z0-9_.-]*['"]?\s*[=:]\s*)('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|['"].+|[^\s"',;&}]+)`)
+	marker = regexp.MustCompile("\x00[0-9]+\x00")
 	// The same as a command line flag: --token …, -password ….
 	flag  = regexp.MustCompile(`(?i)(\s--?[a-z0-9_.-]*(?:password|passwd|secret|token|key|credential|signature|ticket)[a-z0-9_.-]*\s+)([^\s\x00-]\S*)`)
 	email = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
@@ -135,17 +137,33 @@ func (p *Pass) Line(line string) string {
 	return line
 }
 
-// hideNamed hides the value of a named match, and keeps its quotes.
+// hideNamed hides the value of a named match, but its quotes and the
+// markers of known secrets in it.
 func hideNamed(match string) string {
 	m := named.FindStringSubmatch(match)
 	name, value := m[1], m[2]
+	var open, close string
 	if q := value[:1]; q == "'" || q == `"` {
-		if len(value) > 1 && strings.HasSuffix(value, q) {
-			return name + q + "[hidden]" + q
+		open, value = q, value[1:]
+		if strings.HasSuffix(value, q) {
+			close, value = q, value[:len(value)-1]
 		}
-		return name + q + "[hidden]"
 	}
-	return name + "[hidden]"
+	var b strings.Builder
+	b.WriteString(name + open)
+	last := 0
+	for _, at := range marker.FindAllStringIndex(value, -1) {
+		if at[0] > last {
+			b.WriteString("[hidden]")
+		}
+		b.WriteString(value[at[0]:at[1]])
+		last = at[1]
+	}
+	if last < len(value) {
+		b.WriteString("[hidden]")
+	}
+	b.WriteString(close)
+	return b.String()
 }
 
 // address replaces a public IP address with its pseudonym. Private,

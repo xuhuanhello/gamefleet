@@ -5,6 +5,7 @@ package logbook
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -63,9 +64,10 @@ func (b *Book) Write(p []byte) (int, error) {
 			b.lines[b.first] = line{}
 			b.first++
 		}
-		// Move the kept lines to the front once more than half are gone.
+		// Move the kept lines to the front once more than half are gone,
+		// letting go of the rest.
 		if b.first > len(b.lines)/2 {
-			b.lines = append(b.lines[:0], b.lines[b.first:]...)
+			b.lines = slices.Delete(b.lines, 0, b.first)
 			b.first = 0
 		}
 	}

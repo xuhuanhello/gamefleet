@@ -101,11 +101,27 @@ func TestLineHidesUnknownNamedValues(t *testing.T) {
 		"connect key=0f3a9c2e77 to us":       "connect key=[hidden] to us",
 		"secret='abc def' left":              "secret='[hidden]' left",
 		`opened "token": "half`:              `opened "token": "[hidden]`,
+		"secret='alpha beta":                 "secret='[hidden]",
+		`secret="alpha\"beta" next`:          `secret="[hidden]" next`,
 		`config {"server_key": "zz-1234"}`:   `config {"server_key": "[hidden]"}`,
 		"token = 'k10abc' and matchId=m-1":   "token = '[hidden]' and matchId=m-1",
 		"run --api-key sk-12345 --region us": "run --api-key [hidden] --region us",
 	}
 	for in, want := range cases {
+		if got := p.Line(in); got != want {
+			t.Errorf("%q:\n got %q\nwant %q", in, got, want)
+		}
+	}
+}
+
+// A known secret in a named value keeps its name.
+func TestANamedKnownSecretKeepsItsName(t *testing.T) {
+	p := New().With([]Secret{{Name: "runtime:billiards:TICKET_KEY", Value: "s3cr3t-ticket-key-value"}})
+	for in, want := range map[string]string{
+		"key=s3cr3t-ticket-key-value ok":      "key=[runtime:billiards:TICKET_KEY] ok",
+		`{"key":"s3cr3t-ticket-key-value"}`:   `{"key":"[runtime:billiards:TICKET_KEY]"}`,
+		"token='s3cr3t-ticket-key-value tail": "token='[runtime:billiards:TICKET_KEY][hidden]",
+	} {
 		if got := p.Line(in); got != want {
 			t.Errorf("%q:\n got %q\nwant %q", in, got, want)
 		}

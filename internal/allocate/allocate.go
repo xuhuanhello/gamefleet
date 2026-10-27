@@ -41,6 +41,9 @@ const (
 	// gave up on them before their turn came. A place that frees up waits at
 	// most this long.
 	FullFor = 2 * time.Second
+	// unsureFor is how long a match whose allocation got no answer is never
+	// turned away. Nakama gives up on a match after 30 seconds.
+	unsureFor = time.Minute
 )
 
 // Request asks for a room for one match.
@@ -92,6 +95,9 @@ type Service struct {
 	mu      sync.Mutex
 	// full: the routes Agones found full lately, by routeKey.
 	full map[string]fullRoute
+	// unsure: until when each match whose allocation was sent but got no
+	// answer is looked for in the cluster rather than turned away.
+	unsure map[string]time.Time
 }
 
 // fullRoute is a route Agones found full: until when it counts as full, and
@@ -113,7 +119,7 @@ var (
 // New builds the service from the router and the clusters.
 func New(router Router, dir *sites.Directory) *Service {
 	return &Service{router: router, sites: dir, retryWait: 25 * time.Millisecond, capacityWait: 300 * time.Millisecond,
-		now: time.Now, fullFor: FullFor, full: map[string]fullRoute{}}
+		now: time.Now, fullFor: FullFor, full: map[string]fullRoute{}, unsure: map[string]time.Time{}}
 }
 
 // Allocate returns the room for the match, allocating one only if the match
@@ -218,8 +224,13 @@ func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, pla
 		RoomsCapacity: target.RoomsCapacity,
 	})
 	if err != nil {
-		if errors.Is(err, cluster.ErrNoCapacity) {
+		switch {
+		case errors.Is(err, cluster.ErrNoCapacity):
 			s.markFull(req, rooms)
+		case !errors.Is(err, cluster.ErrContention):
+			// The allocation may still go through after the answer was lost,
+			// and later than another one sees the cluster.
+			s.markUnsure(req.MatchID)
 		}
 		return Result{}, err
 	}
@@ -259,13 +270,32 @@ func routeKey(req Request) string {
 // of the cluster's game servers when it was found full. GameFleet alone
 // allocates in the cluster, one allocation at a time, and one that goes
 // through ends the route's time as full: so a match that was not there has
-// no room yet. One that was there, asked about again because an answer got
-// lost or GameFleet restarted, is looked for as usual.
+// no room yet, unless its allocation was sent and got no answer, and may
+// have gone through since. One that was there, asked about again because an
+// answer got lost or GameFleet restarted, is looked for as usual.
 func (s *Service) isFull(req Request) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	f, ok := s.full[routeKey(req)]
-	return ok && s.now().Before(f.until) && cluster.FindMatch(f.rooms, req.MatchID) == nil
+	if !ok || !now.Before(f.until) || now.Before(s.unsure[req.MatchID]) {
+		return false
+	}
+	return cluster.FindMatch(f.rooms, req.MatchID) == nil
+}
+
+// markUnsure notes a match whose allocation got no answer, and forgets the
+// ones noted long enough.
+func (s *Service) markUnsure(matchID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	for id, until := range s.unsure {
+		if !now.Before(until) {
+			delete(s.unsure, id)
+		}
+	}
+	s.unsure[matchID] = now.Add(unsureFor)
 }
 
 // markFull starts the route's time as full, with the game servers the

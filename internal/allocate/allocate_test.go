@@ -439,6 +439,7 @@ type gated struct {
 	mu         sync.Mutex
 	shut       bool
 	failNext   int
+	lose       bool // the next allocation gets no answer, and does not happen yet
 	asked      int
 	hold, held chan struct{}
 }
@@ -453,12 +454,15 @@ func (g *gated) Rooms(ctx context.Context) ([]cluster.Room, error) {
 func (g *gated) Allocate(ctx context.Context, a cluster.Allocation) (cluster.Room, error) {
 	g.mu.Lock()
 	g.asked++
-	shut, hold, held := g.shut || g.failNext > 0, g.hold, g.held
-	g.hold = nil
+	shut, hold, held, lose := g.shut || g.failNext > 0, g.hold, g.held, g.lose
+	g.hold, g.lose = nil, false
 	if g.failNext > 0 {
 		g.failNext--
 	}
 	g.mu.Unlock()
+	if lose {
+		return cluster.Room{}, fmt.Errorf("%w: read response: context deadline exceeded", cluster.ErrUnavailable)
+	}
 	if hold != nil {
 		close(held)
 		<-hold
@@ -595,5 +599,35 @@ func TestMatchesWaitingForTheTurnAreTurnedAwayWhenTheRouteIsFound(t *testing.T) 
 	// m-1 looked three times, a list and an allocation each; m-2 not at all.
 	if g.count() != 6 {
 		t.Fatalf("the cluster was asked %d times, want 6", g.count())
+	}
+}
+
+// An allocation whose answer was lost may go through after another one found
+// the route full without it; the match's retry still gets its room.
+func TestAMatchWhoseAllocationGotNoAnswerIsLookedFor(t *testing.T) {
+	g := &gated{Fake: clustertest.New("us-1", 1), lose: true}
+	svc, _ := gatedService(t, g)
+	ctx := context.Background()
+
+	if _, err := svc.Allocate(ctx, request("m-1", "us", "stable")); err == nil || errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-1 with no answer: err = %v", err)
+	}
+	// m-1's allocation is still on its way and has taken the last place.
+	g.set(true)
+	if _, err := svc.Allocate(ctx, request("m-2", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-2: err = %v, want ErrNoCapacity", err)
+	}
+	// Now it has gone through.
+	room, err := g.Fake.Allocate(ctx, cluster.Allocation{Fleet: "billiards-142", MatchID: "m-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := svc.Allocate(ctx, request("m-1", "us", "stable"))
+	if err != nil || again.Created || again.Room.ID != room.ID {
+		t.Fatalf("m-1 again = %+v, %v; want its room %s", again, err, room.ID)
+	}
+	// m-3 was told nothing before, so it is turned away.
+	if _, err := svc.Allocate(ctx, request("m-3", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-3: err = %v, want ErrNoCapacity", err)
 	}
 }
