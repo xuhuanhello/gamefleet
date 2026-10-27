@@ -600,6 +600,10 @@ func (s *Service) Vars(ctx context.Context) ([]store.Var, error) {
 // Every game with a build gets its Secret, an empty one when it has no
 // settings: GameFleet owns the keys it writes, so a Secret written without a
 // key loses it, and a deleted last variable leaves no old value behind.
+//
+// A game with no build yet that loses its last variable keeps the old values
+// until the first pass after its first build; no game server of it runs
+// before that build is deployed, which takes someone in the console.
 func (s *Service) applyVars(ctx context.Context, api cluster.API) error {
 	var games []string
 	var vars []store.Var

@@ -625,3 +625,25 @@ func TestRedeployGetsAFleetOfItsOwn(t *testing.T) {
 		t.Fatalf("both deployments are Fleet %s", again.Fleet)
 	}
 }
+
+// A rollback and a route back again, after the loop read the database, start
+// the deployment's retention over: the loop does not reclaim it on the old
+// time.
+func TestReclaimWaitsAgainAfterARollbackAndBack(t *testing.T) {
+	f := newFixture(t)
+	d141, d142 := promoted(t, f)
+	ctx := context.Background()
+	f.now = f.now.Add(25 * time.Hour)
+	f.svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &hooked{Fake: f.us, during: func() {
+		if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); err != nil {
+			t.Error(err)
+		}
+		if err := f.svc.SetRoute(ctx, Stable, d142.BuildID, "admin"); err != nil {
+			t.Error(err)
+		}
+	}}})
+	f.reconcile(t)
+	if _, _, ok := f.us.ManagedFleet(d141.Fleet); !ok || f.state(t, d141.ID) != store.StateDraining {
+		t.Fatal("the loop reclaimed a deployment that had just drained again, on its old retention")
+	}
+}

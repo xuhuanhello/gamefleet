@@ -241,12 +241,13 @@ func (s *Service) drain(ctx context.Context, site sites.Site, d store.Deployment
 }
 
 // markDeleted records the deletion of a draining deployment, unless a route
-// started using its build again in the meantime. It reports whether it did.
+// used its build in the meantime: it serves again, or drains since a later
+// time and gets its retention again. It reports whether it did.
 func (s *Service) markDeleted(ctx context.Context, d store.Deployment, why string) (bool, error) {
 	deleted := false
 	err := s.store.Update(ctx, func(tx *store.Tx) error {
 		current, err := tx.Deployment(d.ID)
-		if err != nil || current.State != store.StateDraining {
+		if err != nil || current.State != store.StateDraining || !current.Since.Equal(d.Since) {
 			return err
 		}
 		if err := tx.SetDeploymentState(d.ID, store.StateDeleted); err != nil {

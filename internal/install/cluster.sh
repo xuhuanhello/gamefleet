@@ -247,6 +247,10 @@ elif [ -n "$config_changed" ]; then
 	status k3s 0 3 "按新的配置重启 K3s"
 	/usr/local/bin/k3s-killall.sh >/dev/null 2>&1 || true
 	systemctl start --no-block k3s
+else
+	# An earlier run may have stopped after installing K3s, before starting
+	# it. Starting a running K3s does nothing.
+	systemctl start --no-block k3s
 fi
 
 status k3s 1 3 "等 K3s 启动"
