@@ -210,9 +210,31 @@ GameFleet 自己不发告警，要接一个外部的监控。它给监控准备�
 建议这样接：
 
 1. 在云厂商的拨测（比如腾讯云云拨测）或者 UptimeRobot 这类服务里，每分钟请求一次 `/status`，不是 `200` 就通知你。
-2. 在云监控里给管理机、业务机和数据库机加磁盘告警，比如用到 80% 就通知：GameFleet 不看磁盘，镜像仓库和日志会慢慢变多。
+2. 在云监控里给管理机、业务机和数据库机加磁盘告警，比如用到 80% 就通知：GameFleet 不看磁盘。管理机上占地方的主要是镜像仓库，满之前按下面"镜像仓库的空间"清理；容器日志每个最多留 100 MB，不会一直长。
 
 `/healthz` 只说 GameFleet 的进程还在、是哪个版本，更新器用它判断新版本有没有起来，不要只靠它报警：集群全挂了它也是 `200`。
+
+## 镜像仓库的空间
+
+每推一个构建，镜像仓库就多一份，旧的不会自己删。管理机的盘快满时，删掉用不着的旧构建的镜像：
+
+1. **挑出要删的构建。** 在构建页上，没有部署（或者部署都已经删除）、也不是哪条路由现在或者"上一个"用的构建（回滚要用它）。记下游戏名和构建页上的 digest（`sha256:…`）。
+2. **暂停 CI 推送**，比如先停掉 CI 的发布流程。清理时有新的镜像在上传，可能被一起删坏。
+3. **在管理机上删掉这些镜像的清单**，每个构建一行。GameFleet 不转发删除请求，所以直接发给镜像仓库：
+
+   ```sh
+   cd /opt/gamefleet
+   docker run --rm --network gamefleet_default curlimages/curl -fsS -X DELETE http://registry:5000/v2/游戏名/manifests/sha256:…
+   ```
+
+4. **回收空间。** 先看一遍会删什么，再真删：
+
+   ```sh
+   docker compose exec registry registry garbage-collect --dry-run /etc/distribution/config.yml | tail -5
+   docker compose exec registry registry garbage-collect /etc/distribution/config.yml
+   ```
+
+5. **恢复 CI 推送。** 删了镜像的构建还在构建页上，不要再部署它们：机器拉不到镜像。
 
 ## 管理机上的文件
 

@@ -7,16 +7,24 @@
 #   credentials/             the console password and authenticator link
 #   update/                  requests to the updater and its progress
 #
-# GameFleet's database is in the volume gamefleet_data; updates from the
-# console back it up to backups/ there first. To back it up by hand, stop
-# GameFleet for a moment so the copy is consistent:
-#   docker compose stop gamefleet && docker compose cp gamefleet:/var/lib/gamefleet/. backup/ && docker compose start gamefleet
+# GameFleet's database is in the volume gamefleet_data. The timer
+# gamefleet-backup copies it into backups/ there every day, and updates from
+# the console back it up there first; see "备份和恢复" in docs/install.md.
 name: gamefleet
+
+# Docker keeps every line a container prints unless told otherwise, until
+# the disk is full: each container keeps at most five files of 20 MB.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "5"
 
 services:
   caddy:
     image: ${CADDY_IMAGE:?Set CADDY_IMAGE in .env}
     restart: unless-stopped
+    logging: *logging
     environment:
       GAMEFLEET_DOMAIN: ${GAMEFLEET_DOMAIN:?Set GAMEFLEET_DOMAIN in .env}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
@@ -32,6 +40,7 @@ services:
   gamefleet:
     image: ${GAMEFLEET_IMAGE:?Set GAMEFLEET_IMAGE in .env}
     restart: unless-stopped
+    logging: *logging
     environment:
       # Shared with the updater (updater.sh); empty when there is none.
       GAMEFLEET_UPDATE_DIR: ${GAMEFLEET_UPDATE_DIR:-}
@@ -45,6 +54,7 @@ services:
   registry:
     image: ${REGISTRY_IMAGE:?Set REGISTRY_IMAGE in .env}
     restart: unless-stopped
+    logging: *logging
     environment:
       REGISTRY_HTTP_RELATIVEURLS: "true"
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
