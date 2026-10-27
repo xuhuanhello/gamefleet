@@ -66,6 +66,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "backup" {
+		if err := backup(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "gamefleet backup:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "var" {
 		if err := setVar(os.Args[2:], os.Stdin); err != nil {
 			fmt.Fprintln(os.Stderr, "gamefleet var:", err)
@@ -168,6 +175,28 @@ func run(configPath string, log *slog.Logger) error {
 
 // newUser prints a console user for config.json and the otpauth URI to add to
 // an authenticator app. The password comes from the first line of stdin.
+// backup makes the daily backup of the database, in a process of its own:
+// the systemd timer gamefleet-backup runs it with docker compose exec.
+func backup(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("backup", flag.ContinueOnError)
+	configPath := flags.String("config", "/etc/gamefleet/config.json", "path to the configuration file")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	path, err := store.DailyBackup(ctx, cfg.Database, filepath.Join(filepath.Dir(cfg.Database), "backups"), time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, path)
+	return nil
+}
+
 func newUser(args []string, stdin io.Reader, stdout io.Writer) error {
 	flags := flag.NewFlagSet("user", flag.ContinueOnError)
 	otpauth := flags.String("otpauth", "", "write the authenticator link to this file, mode 0600, and print only the user")

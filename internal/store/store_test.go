@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -308,5 +310,74 @@ func TestUpgradeFindsEveryGameThatHadRuntimeSettings(t *testing.T) {
 	defer s.Close()
 	if got := runtimeGames(t, s); !slices.Equal(got, []string{"billiards", "chess", "go"}) {
 		t.Fatalf("runtime games = %v", got)
+	}
+}
+
+// A daily backup copies the database through a connection of its own, while
+// GameFleet keeps its connection; it checks the copy, and keeps the newest
+// DailyBackups of them.
+func TestDailyBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gamefleet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.Update(ctx, func(tx *Tx) error { return tx.Audit("admin", "test", "x", "") }); err != nil {
+		t.Fatal(err)
+	}
+	backups := filepath.Join(dir, "backups")
+	start := time.Date(2026, 10, 27, 3, 0, 0, 0, time.UTC)
+	var last string
+	for i := range DailyBackups + 3 {
+		last, err = DailyBackup(ctx, path, backups, start.Add(time.Duration(i)*24*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if filepath.Base(last) != "gamefleet-daily-20261112-030000.db" {
+		t.Fatalf("newest backup = %s", last)
+	}
+	// An update's backup is not one of the daily ones and stays.
+	if err := os.WriteFile(filepath.Join(backups, "gamefleet-2.1.0-20261027-101010.db"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DailyBackup(ctx, path, backups, start.Add(30*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(backups)
+	var daily, other int
+	for _, e := range entries {
+		switch {
+		case strings.HasPrefix(e.Name(), "gamefleet-daily-") && strings.HasSuffix(e.Name(), ".db"):
+			daily++
+		case strings.HasPrefix(e.Name(), "."):
+			t.Errorf("a half-written backup is left: %s", e.Name())
+		default:
+			other++
+		}
+	}
+	if daily != DailyBackups || other != 1 {
+		t.Fatalf("%d daily backups and %d others, want %d and 1", daily, other, DailyBackups)
+	}
+	// The copy is a database with what GameFleet wrote.
+	copied, err := Open(last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copied.Close()
+	var log []Entry
+	copied.View(ctx, func(tx *Tx) error { log, err = tx.AuditLog(0, 10); return err })
+	if len(log) != 1 || log[0].Action != "test" {
+		t.Fatalf("audit log of the copy = %+v", log)
+	}
+	if info, err := os.Stat(last); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode = %v, %v; want 0600", info.Mode(), err)
+	}
+	newest, at, err := NewestDailyBackup(backups)
+	if err != nil || filepath.Base(newest) != "gamefleet-daily-20261126-030000.db" || at.IsZero() {
+		t.Fatalf("newest = %s %v %v", newest, at, err)
 	}
 }

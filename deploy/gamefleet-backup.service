@@ -1,0 +1,12 @@
+# Installed by install.sh, which fills in @DIR@. GameFleet copies its database
+# into backups/ in its volume, checks the copy, and keeps the newest 14 daily
+# copies; see "备份和恢复" in docs/install.md.
+[Unit]
+Description=GameFleet: daily backup of its database
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@DIR@
+ExecStart=/usr/bin/docker compose exec -T gamefleet /gamefleet backup

@@ -1,0 +1,12 @@
+# Installed by install.sh: runs gamefleet-backup.service once a day, and at
+# start when the machine was off at the time.
+[Unit]
+Description=GameFleet: daily backup of its database
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -146,6 +146,15 @@ until ready; do
 	sleep 5
 done
 
+# GameFleet backs its database up once a day; the first one now.
+if [ -d /run/systemd/system ] && [ -f gamefleet-backup.service ] && [ -f gamefleet-backup.timer ]; then
+	sed "s|@DIR@|$PWD|g" gamefleet-backup.service >/etc/systemd/system/gamefleet-backup.service
+	cp gamefleet-backup.timer /etc/systemd/system/gamefleet-backup.timer
+	systemctl daemon-reload
+	systemctl enable -q --now gamefleet-backup.timer
+	systemctl start --no-block gamefleet-backup.service
+fi
+
 echo
 say "装好了，控制台在 https://$domain"
 [ -f credentials/console-password ] && cat <<EOF

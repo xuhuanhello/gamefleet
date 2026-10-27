@@ -97,7 +97,31 @@ sh install.sh --domain fleet.example.com --email 你的邮箱
 | 配置 | `/opt/gamefleet/private/config.json` | 控制台账号没了，重新运行安装脚本会新建一个 |
 | 镜像仓库 | Docker 卷 `gamefleet_registry_data` | 已登记的构建拉不到镜像，要让 CI 重新推 |
 
-在线更新前，GameFleet 自动把数据库备份到同一个卷里的 `backups/gamefleet-旧版本-时间.db`，保留最近 5 份。
+集群的控制面和管理机是同一台机器时（比如 us-1），这台机器上还有那个集群自己的数据：`/var/lib/rancher/k3s/server/`。它没了，这个集群就没了，上面的机器要重新加入一个新集群。
+
+**每天自动备份数据库：** 安装脚本装了一个 systemd 定时任务 `gamefleet-backup.timer`，每天把数据库拷一份到同一个卷里的 `backups/gamefleet-daily-时间.db`，检查拷出来的能打开，保留最近 14 份。拷的时候用单独的连接，GameFleet 照常工作。手动拷一份：`systemctl start gamefleet-backup`；看最近几次的结果：`journalctl -u gamefleet-backup -n 20`。
+
+在线更新前，GameFleet 还会把数据库备份到同一个卷里的 `backups/gamefleet-旧版本-时间.db`，保留最近 5 份。
+
+**这些备份都还在管理机的盘上，盘坏了会一起没。** 要再拷到机器外面去：
+
+- **数据库、配置和镜像仓库：** 用 rclone（或者 coscli）每天同步到对象存储。存储桶设成私有，开版本控制；管理机上用的子账号只给写，不给删。数据库和配置里有各集群的 token，按密钥材料保管。
+
+  ```sh
+  # /etc/cron.d/gamefleet-offsite，rclone 里先配好一个叫 cos 的远端（provider TencentCOS）
+  45 4 * * * root rclone sync /var/lib/docker/volumes/gamefleet_gamefleet_data/_data/backups cos:你的桶/gamefleet/backups
+  50 4 * * * root rclone copy /opt/gamefleet/private cos:你的桶/gamefleet/private
+  55 4 * * * root rclone copy /var/lib/docker/volumes/gamefleet_registry_data/_data cos:你的桶/gamefleet/registry
+  ```
+
+  镜像仓库的文件写进去就不再变，`rclone copy` 只传新增的部分。
+- **控制面在这台机器上的集群：** 用云厂商的快照整盘保存。轻量应用服务器没有定期快照，可以用 tccli 定时调接口打快照，满额前先删最旧的一个：
+
+  ```sh
+  tccli lighthouse CreateInstanceSnapshot --region 地域 --InstanceId 实例ID --SnapshotName gamefleet-$(date +%Y%m%d)
+  ```
+
+**确认备份是新的：** 控制台和状态接口会在最新一份每日备份超过 26 小时时报警，见[监控](#监控)。
 
 **手动备份：** GameFleet 要停几秒，拷出来的文件才完整。这几秒里分配接口不应答，正在打的对局不受影响。
 
