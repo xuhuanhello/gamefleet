@@ -11,11 +11,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/xuhuanhello/gamefleet/internal/allocate"
 	"github.com/xuhuanhello/gamefleet/internal/auth"
 	"github.com/xuhuanhello/gamefleet/internal/buildinfo"
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/release"
 	"github.com/xuhuanhello/gamefleet/internal/store"
@@ -37,13 +39,29 @@ type handler struct {
 	svc      *allocate.Service
 	releases Releases
 	keys     Keys
+	monitor  *health.Monitor
 	log      *slog.Logger
 }
 
-// Handler returns the HTTP handler for the machine API and /healthz.
-func Handler(svc *allocate.Service, releases Releases, keys Keys, log *slog.Logger) http.Handler {
-	h := &handler{svc: svc, releases: releases, keys: keys, log: log}
+// Handler returns the HTTP handler for the machine API, /healthz and
+// /status. monitor may be nil: /status then answers 404.
+func Handler(svc *allocate.Service, releases Releases, keys Keys, monitor *health.Monitor, log *slog.Logger) http.Handler {
+	h := &handler{svc: svc, releases: releases, keys: keys, monitor: monitor, log: log}
 	mux := http.NewServeMux()
+	// For an outside monitor, without a key: what needs a person, with no
+	// secret in it. 503 when something does.
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		if h.monitor == nil {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		st := h.monitor.Status()
+		status := http.StatusOK
+		if !st.OK {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, st)
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": buildinfo.Version})
 	})
@@ -133,7 +151,12 @@ func (h *handler) allocate(w http.ResponseWriter, r *http.Request, caller auth.C
 		writeError(w, http.StatusBadRequest, allocate.ErrInvalid.Error())
 		return
 	}
+	started := time.Now()
 	result, err := h.svc.Allocate(r.Context(), req)
+	// A request that was wrong, or for a route there is not, is the
+	// caller's; anything else that failed is GameFleet's or a cluster's.
+	h.monitor.Allocation(time.Since(started),
+		err != nil && !errors.Is(err, allocate.ErrInvalid) && !errors.Is(err, allocate.ErrRouteNotFound))
 	if err != nil {
 		h.fail(w, err, "allocation", "caller", caller.Name, "matchId", req.MatchID)
 		return

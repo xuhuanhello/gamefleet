@@ -6,7 +6,10 @@
   </div>
   {{template "live"}}
 </header>
-{{- range .Data}}
+{{- range .Data.Problems}}
+<p class="finding bad"><span class="dot"></span><span class="text">GameFleet 自己：{{.Name}}，{{.Detail}}</span></p>
+{{- end}}
+{{- range .Data.Clusters}}
 {{- $c := .Name}}
 <section class="section">
   <h2>{{.Name}} <span class="muted">地区 {{.Region}}</span><a class="more" href="/clusters/{{.Name}}">打开集群 →</a></h2>

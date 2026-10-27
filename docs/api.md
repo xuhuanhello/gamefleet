@@ -17,11 +17,12 @@ GameFleet 对外只有一个地址，比如 `https://fleet.example.com`：控制
 
 ## 接口
 
-除了 `/healthz`，都要带 key。出错时返回 `{"error": "代码"}`，有的还带给人看的 `message`。
+除了 `/healthz` 和 `/status`，都要带 key。出错时返回 `{"error": "代码"}`，有的还带给人看的 `message`。
 
 | 接口 | 权限 | 返回 |
 |---|---|---|
 | `GET /healthz` | – | `{"status":"ok","version":"2.1.0"}`；从源码编译的版本号是 `dev` |
+| `GET /status` | – | 给外部监控用：`200` 一切正常，`503` 有要人去看的事，JSON 里有每项检查。见[安装文档的监控](install.md#监控) |
 | `POST /api/v1/builds` | `push` | `201` 和新构建；镜像已经登记过时返回 `200` 和那个构建 |
 | `GET /api/v1/routes?game=` | `allocate` | 这个游戏的路由：通道、联机版本、构建、部署了的地区 |
 | `POST /api/v1/allocations` | `allocate` | `201` 和分到的战斗服；同一个 matchId 再要一次，返回 `200` 和同一个战斗服 |

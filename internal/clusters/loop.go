@@ -28,6 +28,7 @@ func (s *Service) Run(ctx context.Context) {
 		if err := s.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("clusters loop", "error", err)
 		}
+		s.monitor.Pass("clusters")
 		select {
 		case <-ctx.Done():
 			return

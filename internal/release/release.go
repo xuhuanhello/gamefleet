@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
@@ -72,6 +73,7 @@ type Registry interface {
 
 // Service releases builds.
 type Service struct {
+	monitor   *health.Monitor
 	store     *store.Store
 	registry  Registry
 	host      string // where clusters pull images from
@@ -87,6 +89,10 @@ func New(s *store.Store, reg Registry, host string, dir *sites.Directory, retent
 }
 
 func (s *Service) site(name string) (sites.Site, bool) { return s.sites.Get(name) }
+
+// SetMonitor has the loop tell the monitor when it gets through a pass, and
+// whether it reached each cluster.
+func (s *Service) SetMonitor(m *health.Monitor) { s.monitor = m }
 
 // Error is a refusal written for the operator, in the console's language.
 type Error struct {

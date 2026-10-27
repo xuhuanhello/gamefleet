@@ -35,6 +35,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/buildinfo"
 	"github.com/xuhuanhello/gamefleet/internal/clusters"
 	"github.com/xuhuanhello/gamefleet/internal/config"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/install"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/release"
@@ -113,6 +114,20 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	releases := release.New(db, registry.NewClient(upstream), cfg.Registry.Host, dir, cfg.DrainRetention.Duration, log)
 	svc := allocate.New(releases, dir)
+	backups := filepath.Join(filepath.Dir(cfg.Database), "backups")
+	monitor := health.New(time.Now, func() (time.Time, error) {
+		_, at, err := store.NewestDailyBackup(backups)
+		return at, err
+	})
+	monitor.Watch([]string{"release", "clusters"}, func() []string {
+		var names []string
+		for _, s := range dir.All() {
+			names = append(names, s.Name)
+		}
+		return names
+	})
+	releases.SetMonitor(monitor)
+	fleets.SetMonitor(monitor)
 	users, err := auth.New(cfg.Users)
 	if err != nil {
 		return err
@@ -125,10 +140,10 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	updates := update.New(update.Options{
 		Current: buildinfo.Version, Repository: releasesRepo, Dir: os.Getenv("GAMEFLEET_UPDATE_DIR"),
-		Backup: db.Backup, BackupDir: filepath.Join(filepath.Dir(cfg.Database), "backups"), Log: log,
+		Backup: db.Backup, BackupDir: backups, Log: log,
 	})
 	console, err := web.New(web.Options{Host: cfg.Registry.Host, Sites: dir, Clusters: fleets, Auth: users, Keys: keys,
-		Store: db, Releases: releases, Updates: updates, Log: log})
+		Store: db, Releases: releases, Updates: updates, Monitor: monitor, Log: log})
 	if err != nil {
 		return err
 	}
@@ -137,11 +152,12 @@ func run(configPath string, log *slog.Logger) error {
 		return err
 	}
 
-	machines := api.Handler(svc, releases, keys, log)
+	machines := api.Handler(svc, releases, keys, monitor, log)
 	mux := http.NewServeMux()
 	mux.Handle("/v2/", registry.NewProxy(upstream, keys, log))
 	mux.Handle("/api/", machines)
 	mux.Handle("/healthz", machines)
+	mux.Handle("/status", machines)
 	mux.Handle("/install/", installer)
 	mux.Handle("/", console.Handler())
 

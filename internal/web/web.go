@@ -25,6 +25,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/auth"
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
 	"github.com/xuhuanhello/gamefleet/internal/clusters"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
 	"github.com/xuhuanhello/gamefleet/internal/update"
@@ -44,6 +45,7 @@ type Console struct {
 	releases Releases
 	log      *slog.Logger
 	updates  Updates
+	monitor  *health.Monitor
 	now      func() time.Time
 	pages    map[string]*template.Template
 }
@@ -59,7 +61,10 @@ type Options struct {
 	Store    *store.Store
 	Releases Releases
 	Updates  Updates
-	Log      *slog.Logger
+	// Monitor, when set, puts what needs a person at the top of the
+	// overview.
+	Monitor *health.Monitor
+	Log     *slog.Logger
 }
 
 // SessionCookie holds the session token.
@@ -84,7 +89,7 @@ func New(o Options) (*Console, error) {
 		// A build from source with no updater: nothing to check or apply.
 		o.Updates = update.New(update.Options{Current: "dev"})
 	}
-	c := &Console{host: o.Host, sites: o.Sites, clusters: o.Clusters, auth: o.Auth, apiKeys: o.Keys, store: o.Store, releases: o.Releases, log: o.Log, updates: o.Updates,
+	c := &Console{host: o.Host, sites: o.Sites, clusters: o.Clusters, auth: o.Auth, apiKeys: o.Keys, store: o.Store, releases: o.Releases, log: o.Log, updates: o.Updates, monitor: o.Monitor,
 		now: time.Now, pages: map[string]*template.Template{}}
 	funcs := template.FuncMap{
 		"age":          c.age,
@@ -460,11 +465,24 @@ func (c *Console) overview(w http.ResponseWriter, r *http.Request, p page) {
 	for _, s := range c.sites.All() {
 		summaries = append(summaries, c.summarize(r.Context(), s, st))
 	}
+	var problems []health.Check
+	if c.monitor != nil {
+		for _, check := range c.monitor.Status().Checks {
+			if !check.OK {
+				problems = append(problems, check)
+			}
+		}
+	}
 	p.Title = "总览"
 	p.Nav = "overview"
 	p.Refresh = true
-	p.Data = summaries
+	p.Data = overviewPage{Problems: problems, Clusters: summaries}
 	c.render(w, http.StatusOK, "overview", p)
+}
+
+type overviewPage struct {
+	Problems []health.Check
+	Clusters []clusterSummary
 }
 
 func (c *Console) summarize(ctx context.Context, s Site, st releaseState) clusterSummary {

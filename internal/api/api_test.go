@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/auth"
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
 	"github.com/xuhuanhello/gamefleet/internal/cluster/clustertest"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/release"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
@@ -54,12 +56,12 @@ func image(digest, version string, labels ...string) registry.Image {
 // newServer runs the API with build 1 deployed in us-1 and routed on stable.
 func newServer(t *testing.T, ready int) (*httptest.Server, *clustertest.Fake) {
 	t.Helper()
-	return newServerWith(t, ready, func(r Releases) Releases { return r })
+	return newServerWith(t, ready, func(r Releases) Releases { return r }, nil)
 }
 
 // newServerWith is newServer with the releases the API sees passed through
 // wrap.
-func newServerWith(t *testing.T, ready int, wrap func(Releases) Releases) (*httptest.Server, *clustertest.Fake) {
+func newServerWith(t *testing.T, ready int, wrap func(Releases) Releases, monitor *health.Monitor) (*httptest.Server, *clustertest.Fake) {
 	t.Helper()
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "gamefleet.db"))
@@ -97,7 +99,7 @@ func newServerWith(t *testing.T, ready int, wrap func(Releases) Releases) (*http
 		t.Fatal(err)
 	}
 	svc := allocate.New(releases, dir)
-	server := httptest.NewServer(Handler(svc, wrap(releases), keys, log))
+	server := httptest.NewServer(Handler(svc, wrap(releases), keys, monitor, log))
 	t.Cleanup(server.Close)
 	return server, fake
 }
@@ -263,7 +265,7 @@ func TestGMActionsSayWhetherTheyWereAudited(t *testing.T) {
 		if !audit {
 			wrap = func(r Releases) Releases { return unaudited{r} }
 		}
-		server, _ := newServerWith(t, 2, wrap)
+		server, _ := newServerWith(t, 2, wrap, nil)
 		_, first := call(t, server, http.MethodPost, "/api/v1/allocations", nakamaKey, match)
 		if status, out := call(t, server, http.MethodPost, "/api/v1/matches/m-1/end", gmKey, ""); status != http.StatusAccepted || out["audited"] != audit {
 			t.Fatalf("audit log works %v: end = %d %v", audit, status, out)
@@ -314,5 +316,29 @@ func TestRegisterBuilds(t *testing.T) {
 		if status != c.want || out["error"] != c.code || out["message"] == "" {
 			t.Errorf("%s: %d %v, want %d %s with a message", c.body, status, out, c.want, c.code)
 		}
+	}
+}
+
+// /status answers an outside monitor without a key: 200 when nothing needs a
+// person, 503 when something does, such as allocations that fail.
+func TestStatusForAMonitor(t *testing.T) {
+	monitor := health.New(time.Now, nil)
+	monitor.Watch(nil, nil)
+	server, _ := newServerWith(t, 0, func(r Releases) Releases { return r }, monitor)
+	status, out := call(t, server, http.MethodGet, "/status", "", "")
+	if status != http.StatusOK || out["ok"] != true {
+		t.Fatalf("status = %d %v", status, out)
+	}
+	// No game server is ready: each allocation fails with no_capacity.
+	for range health.MinAllocations {
+		if status, _ := call(t, server, http.MethodPost, "/api/v1/allocations", nakamaKey, match); status != http.StatusConflict {
+			t.Fatalf("allocation without capacity = %d", status)
+		}
+	}
+	// A wrong request is the caller's and does not count.
+	call(t, server, http.MethodPost, "/api/v1/allocations", nakamaKey, `{"matchId":"bad id"}`)
+	status, out = call(t, server, http.MethodGet, "/status", "", "")
+	if status != http.StatusServiceUnavailable || out["ok"] != false || !strings.Contains(fmt.Sprint(out["checks"]), "失败 5 次") {
+		t.Fatalf("status after failed allocations = %d %v", status, out)
 	}
 }

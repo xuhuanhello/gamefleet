@@ -24,6 +24,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/cluster/clustertest"
 	"github.com/xuhuanhello/gamefleet/internal/clusters"
 	"github.com/xuhuanhello/gamefleet/internal/config"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/release"
 	"github.com/xuhuanhello/gamefleet/internal/remote"
@@ -58,7 +59,8 @@ type env struct {
 	dir      *sites.Directory
 	updates  *fakeUpdates
 	// ahead moves the store's clock forward from now.
-	ahead *atomic.Int64
+	ahead   *atomic.Int64
+	monitor *health.Monitor
 }
 
 // later moves the store's clock forward by d.
@@ -157,9 +159,11 @@ func newEnv(t *testing.T) *env {
 	})
 	releases := release.New(db, testImages, "fleet.example.com", dir, 24*time.Hour, log)
 	updates := &fakeUpdates{current: "2.0.0", updater: true}
+	monitor := health.New(time.Now, nil)
+	monitor.Watch(nil, nil)
 	console, err := New(Options{
 		Host: "fleet.example.com", Sites: dir, Clusters: fleets, Auth: a, Keys: keys,
-		Store: db, Releases: releases, Updates: updates, Log: log,
+		Store: db, Releases: releases, Updates: updates, Monitor: monitor, Log: log,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +173,7 @@ func newEnv(t *testing.T) *env {
 	client := server.Client()
 	client.Jar, _ = cookiejar.New(nil)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &env{server: server, client: client, fake: fake, secret: secret, store: db, releases: releases, clusters: fleets, dir: dir, updates: updates, ahead: ahead}
+	return &env{server: server, client: client, fake: fake, secret: secret, store: db, releases: releases, clusters: fleets, dir: dir, updates: updates, ahead: ahead, monitor: monitor}
 }
 
 func (e *env) get(t *testing.T, path string) (*http.Response, string) {
@@ -562,4 +566,19 @@ func TestRenameAMachine(t *testing.T) {
 	if resp.StatusCode == http.StatusSeeOther || !strings.Contains(visible(body), "名称最多 40 个字") {
 		t.Errorf("long name: %d\n%s", resp.StatusCode, visible(body))
 	}
+}
+
+// What needs a person about GameFleet itself heads the overview.
+func TestOverviewSaysWhatNeedsAPerson(t *testing.T) {
+	e := newEnv(t)
+	e.signIn(t)
+	_, body := e.get(t, "/")
+	if strings.Contains(visible(body), "GameFleet 自己") {
+		t.Fatal("a problem shown with none")
+	}
+	for range health.MinAllocations {
+		e.monitor.Allocation(time.Second, true)
+	}
+	_, body = e.get(t, "/")
+	contains(t, visible(body), "GameFleet 自己：allocation，最近 5 分钟 5 次，失败 5 次")
 }

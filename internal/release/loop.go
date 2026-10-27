@@ -31,6 +31,7 @@ func (s *Service) Run(ctx context.Context) {
 		if err := s.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("release loop", "error", err)
 		}
+		s.monitor.Pass("release")
 		select {
 		case <-ctx.Done():
 			return
@@ -88,6 +89,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 func (s *Service) reconcileSite(ctx context.Context, site sites.Site, deployments []store.Deployment, builds map[int64]store.Build) error {
 	fleets, err := site.Cluster.ManagedFleets(ctx)
 	if err != nil {
+		s.monitor.Contact(site.Name, err)
 		return err
 	}
 	byName := map[string]cluster.ManagedFleet{}
@@ -95,6 +97,7 @@ func (s *Service) reconcileSite(ctx context.Context, site sites.Site, deployment
 		byName[f.Name] = f
 	}
 	rooms, err := site.Cluster.Rooms(ctx)
+	s.monitor.Contact(site.Name, err)
 	if err != nil {
 		return err
 	}

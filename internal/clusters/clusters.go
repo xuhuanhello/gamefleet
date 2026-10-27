@@ -26,6 +26,7 @@ import (
 
 	"github.com/xuhuanhello/gamefleet/internal/auth"
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/remote"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
@@ -64,6 +65,7 @@ type Service struct {
 	now     func() time.Time
 	kick    chan struct{}
 
+	monitor     *health.Monitor
 	run         Runner
 	readHostKey HostKeyReader
 	appearWait  time.Duration
@@ -83,6 +85,9 @@ func New(s *store.Store, dir *sites.Directory, keys *auth.Keys, connect Connect,
 		kick: make(chan struct{}, 1), run: remote.Run, readHostKey: remote.ReadHostKey, appearWait: appearWait,
 		joins: map[string]*Join{}, nodes: map[string]*NodeJob{}}
 }
+
+// SetMonitor has the loop tell the monitor when it gets through a pass.
+func (s *Service) SetMonitor(m *health.Monitor) { s.monitor = m }
 
 // ConnectClient opens a real cluster.
 func ConnectClient(c store.Cluster) (cluster.API, error) {
