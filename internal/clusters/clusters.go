@@ -495,20 +495,22 @@ func (s *Service) Keep(ctx context.Context, clusterName, node, actor string) err
 	if n.Retiring.IsZero() {
 		return nil
 	}
-	if err := site.Cluster.KeepNode(ctx, node); err != nil {
-		return err
-	}
-	// Its game servers take new matches again.
+	// Its game servers take new matches again, before the machine stops
+	// retiring: if this fails half way, the machine still retires, and
+	// keeping it again goes through all of it.
 	rooms, err := site.Cluster.Rooms(ctx)
 	if err != nil {
 		return err
 	}
 	for _, r := range rooms {
-		if r.Node == node {
+		if r.Node == node && r.Retiring {
 			if err := site.Cluster.MarkRetiring(ctx, r.ID, false); err != nil {
 				return err
 			}
 		}
+	}
+	if err := site.Cluster.KeepNode(ctx, node); err != nil {
+		return err
 	}
 	return doneButNotAudited("已经取消下线", s.audit(ctx, actor, "node.keep", node+" @ "+clusterName, ""))
 }

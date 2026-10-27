@@ -334,3 +334,43 @@ func TestKeepWhileTheLoopRemovesTheMachine(t *testing.T) {
 		t.Fatalf("the machine stayed, but Keep failed: %v", err)
 	}
 }
+
+// flaky fails the first call that puts a game server back into allocation.
+type flaky struct {
+	*clustertest.Fake
+	failed bool
+}
+
+func (f *flaky) MarkRetiring(ctx context.Context, id string, retiring bool) error {
+	if !retiring && !f.failed {
+		f.failed = true
+		return errors.New("connection reset")
+	}
+	return f.Fake.MarkRetiring(ctx, id, retiring)
+}
+
+// Keeping a machine that fails half way is tried again in full: the machine
+// keeps retiring until all its game servers take matches again.
+func TestKeepThatFailsHalfWayCanBeTriedAgain(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	us := clustertest.New("us-1", 0)
+	us.SetView(clustertest.View{Nodes: []cluster.Node{{Name: "worker", Ready: true}}})
+	us.AddRoom(cluster.Room{ID: "billiards-1-a", State: "Allocated", Node: "worker", Capacity: 50, Matches: []cluster.Match{{ID: "m-1"}}})
+	f.dir.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &flaky{Fake: us}})
+	if err := f.svc.Retire(ctx, "us-1", "worker", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Keep(ctx, "us-1", "worker", "admin"); err == nil {
+		t.Fatal("Keep reported success though a game server stayed out of allocation")
+	}
+	if err := f.svc.Keep(ctx, "us-1", "worker", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if nodes, _ := us.Nodes(ctx); !nodes[0].Retiring.IsZero() || us.Retiring("billiards-1-a") {
+		t.Fatalf("after keeping again: node %+v, game server retiring %v", nodes[0], us.Retiring("billiards-1-a"))
+	}
+}
