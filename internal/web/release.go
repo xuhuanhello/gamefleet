@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,8 +25,8 @@ type Releases interface {
 	Undeploy(ctx context.Context, id int64, actor string) error
 	SetBuffer(ctx context.Context, id int64, buffer, maxReplicas int, actor string) error
 	DefaultsFor(ctx context.Context, game, cluster string) (store.Deployment, error)
-	SetRoute(ctx context.Context, channel string, buildID int64, actor string) error
-	Promote(ctx context.Context, game, compat, actor string) error
+	SetRoute(ctx context.Context, channel string, buildID int64, actor string, force bool) error
+	Promote(ctx context.Context, game, compat, actor string, force bool) error
 	Rollback(ctx context.Context, game, channel, compat, actor string) error
 	DeleteRoute(ctx context.Context, game, channel, compat, actor string) error
 	Routes(ctx context.Context, game string) ([]release.RouteView, error)
@@ -382,12 +383,13 @@ func (c *Console) setBuffer(w http.ResponseWriter, r *http.Request, p page) {
 func (c *Console) routeAction(w http.ResponseWriter, r *http.Request, p page) {
 	c.act(w, r, p, "/routes", func(ctx context.Context, f formValues) error {
 		game, channel, compat := f.text("game"), f.text("channel"), f.text("compat")
+		force := f.text("force") == "1"
 		switch r.PathValue("action") {
 		case "set":
 			build, _ := strconv.ParseInt(f.text("build"), 10, 64)
-			return c.releases.SetRoute(ctx, channel, build, p.User)
+			return c.releases.SetRoute(ctx, channel, build, p.User, force)
 		case "promote":
-			return c.releases.Promote(ctx, game, compat, p.User)
+			return c.releases.Promote(ctx, game, compat, p.User, force)
 		case "rollback":
 			return c.releases.Rollback(ctx, game, channel, compat, p.User)
 		case "delete":
@@ -615,6 +617,16 @@ func (c *Console) act(w http.ResponseWriter, r *http.Request, p page, fallback s
 		http.Redirect(w, r, back, http.StatusSeeOther)
 	case errors.As(err, &clusterRefusal):
 		c.refused(w, p, http.StatusConflict, clusterRefusal.Text, back)
+	case errors.Is(err, release.ErrNotReady) && errors.As(err, &refusal):
+		values := url.Values{}
+		for k, v := range r.PostForm {
+			if k != "force" {
+				values[k] = v
+			}
+		}
+		p.Title = "没有改动"
+		p.Data = refusalPage{Text: refusal.Text, Back: back, Force: true, Action: r.URL.Path, Values: values}
+		c.render(w, http.StatusConflict, "refused", p)
 	case errors.As(err, &refusal):
 		status := http.StatusConflict
 		switch {
@@ -633,6 +645,11 @@ func (c *Console) act(w http.ResponseWriter, r *http.Request, p page, fallback s
 
 type refusalPage struct {
 	Text, Back string
+	// Force, when set, offers to do it anyway: the same form again, with
+	// force=1, to Action.
+	Force  bool
+	Action string
+	Values url.Values
 }
 
 func (c *Console) refused(w http.ResponseWriter, p page, status int, text, back string) {

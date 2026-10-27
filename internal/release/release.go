@@ -44,6 +44,9 @@ var (
 	// ErrConflict means the change does not fit the current state, for
 	// example routing to a build that is not deployed anywhere.
 	ErrConflict = errors.New("conflict")
+	// ErrNotReady refuses a route to a build that has no game server ready
+	// in some cluster. The operator may move the route anyway.
+	ErrNotReady = errors.New("not ready")
 	// ErrNoRoute means no deployed build serves the match's channel and
 	// compat version in its region.
 	ErrNoRoute = errors.New("route_not_found")
@@ -382,13 +385,65 @@ func (s *Service) SetBuffer(ctx context.Context, id int64, buffer, maxReplicas i
 // --- Routes
 
 // SetRoute sends new matches of the build's game and compat version on the
-// channel to the build. The build must be deployed somewhere.
-func (s *Service) SetRoute(ctx context.Context, channel string, buildID int64, actor string) error {
+// channel to the build. The build must be deployed somewhere, and, unless
+// force, have a game server ready in each cluster it is deployed in.
+func (s *Service) SetRoute(ctx context.Context, channel string, buildID int64, actor string, force bool) error {
+	if !force {
+		if err := s.ready(ctx, buildID); err != nil {
+			return err
+		}
+	}
 	return s.route(ctx, "route.set", channel, buildID, actor)
 }
 
-// Promote points stable at the build canary uses for the compat version.
-func (s *Service) Promote(ctx context.Context, game, compat, actor string) error {
+// ready refuses a build that has no game server ready to take a match in
+// some cluster it is deployed in: a Fleet not made yet, game servers still
+// pulling their image on new machines, or a Fleet scaled to zero. A route
+// moved there would fail that region's new matches until they start. It
+// reads the clusters outside any transaction.
+func (s *Service) ready(ctx context.Context, buildID int64) error {
+	var b store.Build
+	var live []store.Deployment
+	err := s.store.View(ctx, func(tx *store.Tx) error {
+		var err error
+		if b, err = tx.Build(buildID); err != nil {
+			return notFound(err, "构建")
+		}
+		live, err = liveDeploymentsOf(tx, buildID)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	var waiting []string
+	for _, d := range live {
+		site, ok := s.site(d.Cluster)
+		if !ok {
+			continue
+		}
+		fleets, err := site.Cluster.ManagedFleets(ctx)
+		if err != nil {
+			return &Error{ErrNotReady, fmt.Sprintf("读不到 %s 上的战斗服，没法确认 %s 在那里能接新局：%v", d.Cluster, buildName(b), err)}
+		}
+		ready := false
+		for _, f := range fleets {
+			if owns(d, f) && f.Ready+f.Allocated > 0 {
+				ready = true
+			}
+		}
+		if !ready {
+			waiting = append(waiting, d.Cluster)
+		}
+	}
+	if len(waiting) > 0 {
+		return &Error{ErrNotReady, fmt.Sprintf("%s 在 %s 上还没有能接新局的战斗服（刚部署，或者新机器还在下载镜像），现在切过去，那里的新对局会分配失败。等它就绪再切", buildName(b), strings.Join(waiting, "、"))}
+	}
+	return nil
+}
+
+// Promote points stable at the build canary uses for the compat version. The
+// build must be ready as for SetRoute, unless force.
+func (s *Service) Promote(ctx context.Context, game, compat, actor string, force bool) error {
 	var canary store.Route
 	err := s.store.View(ctx, func(tx *store.Tx) error {
 		var err error
@@ -398,10 +453,18 @@ func (s *Service) Promote(ctx context.Context, game, compat, actor string) error
 	if err != nil {
 		return err
 	}
+	if !force {
+		if err := s.ready(ctx, canary.BuildID); err != nil {
+			return err
+		}
+	}
 	return s.route(ctx, "route.promote", Stable, canary.BuildID, actor)
 }
 
-// Rollback points the route back at the build it used before.
+// Rollback points the route back at the build it used before. It does not
+// wait for the build to be ready: a rollback is for when the current build
+// is broken. A drained build's Fleet starts its game servers again then,
+// which takes from seconds to minutes; matches fail meanwhile.
 func (s *Service) Rollback(ctx context.Context, game, channel, compat, actor string) error {
 	var r store.Route
 	err := s.store.View(ctx, func(tx *store.Tx) error {

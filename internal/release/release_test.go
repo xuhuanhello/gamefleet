@@ -6,7 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +77,8 @@ func (f *fixture) register(t *testing.T, tag string) store.Build {
 	return b
 }
 
+// deploy deploys the build to us-1 and makes a pass, as the loop does
+// within Interval: the Fleet starts, with its game servers ready.
 func (f *fixture) deploy(t *testing.T, b store.Build) store.Deployment {
 	t.Helper()
 	req := DeployRequest{BuildID: b.ID, Cluster: "us-1", Buffer: 2, MaxReplicas: 10, Rooms: 50, Resources: Defaults.Resources}
@@ -84,6 +86,7 @@ func (f *fixture) deploy(t *testing.T, b store.Build) store.Deployment {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.reconcile(t)
 	return d
 }
 
@@ -154,7 +157,7 @@ func TestReleaseLifecycle(t *testing.T) {
 	if f.state(t, d141.ID) != store.StateNew || f.resolve(t, Stable) != "none" {
 		t.Fatal("a deployment without a route must not get matches")
 	}
-	if err := f.svc.SetRoute(ctx, Stable, b141.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, b141.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
@@ -171,11 +174,11 @@ func TestReleaseLifecycle(t *testing.T) {
 
 	// 142 goes to testers first.
 	b142 := f.register(t, "142")
-	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin"); !errors.Is(err, ErrConflict) {
+	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin", false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("routing to an undeployed build: %v", err)
 	}
 	d142 := f.deploy(t, b142)
-	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
@@ -189,7 +192,7 @@ func TestReleaseLifecycle(t *testing.T) {
 
 	// Promotion: 141 drains, but a match is still running on it. The canary
 	// ends: testers play with everyone again.
-	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); err != nil {
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	if f.state(t, d141.ID) != store.StateDraining || f.resolve(t, Stable) != d142.Fleet || f.resolve(t, Canary) != "none" {
@@ -233,8 +236,12 @@ func TestReleaseLifecycle(t *testing.T) {
 	if f.resolve(t, Stable) != again.Fleet || f.state(t, again.ID) != store.StateServing || f.state(t, d142.ID) != store.StateDraining {
 		t.Fatal("after rollback stable goes to 141 and 142, routed by nothing, drains")
 	}
-	// Testers go on with 142 while everyone else is back on 141.
-	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin"); err != nil {
+	// Testers go on with 142 while everyone else is back on 141. 142 drained
+	// to no game server, so the route moves there only when asked to anyway.
+	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin", false); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("routing to a drained build: %v", err)
+	}
+	if err := f.svc.SetRoute(ctx, Canary, b142.ID, "admin", true); err != nil {
 		t.Fatal(err)
 	}
 	if f.resolve(t, Canary) != d142.Fleet || f.state(t, d142.ID) != store.StateServing {
@@ -312,7 +319,7 @@ func TestDrainingStopsGameServersWithoutMatches(t *testing.T) {
 	ctx := context.Background()
 	b := f.register(t, "141")
 	d := f.deploy(t, b)
-	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
@@ -334,7 +341,7 @@ func TestDrainingStopsGameServersWithoutMatches(t *testing.T) {
 	// a match stays.
 	b2 := f.register(t, "142")
 	f.deploy(t, b2)
-	if err := f.svc.SetRoute(ctx, Stable, b2.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, b2.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
@@ -352,7 +359,7 @@ func TestServingStopsGameServersIdleForLong(t *testing.T) {
 	ctx := context.Background()
 	b := f.register(t, "141")
 	d := f.deploy(t, b)
-	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
@@ -442,22 +449,23 @@ func TestRouteKeepsEveryCluster(t *testing.T) {
 		if _, err := f.svc.Deploy(ctx, req, "admin"); err != nil {
 			t.Fatal(err)
 		}
+		f.reconcile(t)
 	}
 	old := f.register(t, "141")
 	deployTo(old, "us-1")
 	deployTo(old, "sg-1")
-	if err := f.svc.SetRoute(ctx, Stable, old.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, old.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	next := f.register(t, "142")
 	deployTo(next, "us-1")
-	if err := f.svc.SetRoute(ctx, Canary, next.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Canary, next.ID, "admin", false); err != nil {
 		t.Fatalf("a new canary route has nothing to keep: %v", err)
 	}
-	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); !errors.Is(err, ErrConflict) {
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin", false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("promoting a build missing from sg-1: err = %v, want ErrConflict", err)
 	}
-	if err := f.svc.SetRoute(ctx, Stable, next.ID, "admin"); !errors.Is(err, ErrConflict) {
+	if err := f.svc.SetRoute(ctx, Stable, next.ID, "admin", false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("pointing stable at a build missing from sg-1: err = %v, want ErrConflict", err)
 	}
 	var stable store.Route
@@ -469,22 +477,25 @@ func TestRouteKeepsEveryCluster(t *testing.T) {
 		t.Fatalf("stable = %+v, %v; want it left on #%d", stable, err, old.ID)
 	}
 	deployTo(next, "sg-1")
-	if err := f.svc.Promote(ctx, "billiards", "net7", "admin"); err != nil {
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin", false); err != nil {
 		t.Fatalf("promoting once sg-1 has the build: %v", err)
 	}
 }
 
 // hooked runs a function once, the first time the Fleets are read: something
-// that happens while a deletion is under way.
+// that happens while a deletion is under way. What the function does may read
+// the Fleets too, without running it again.
 type hooked struct {
 	*clustertest.Fake
-	once   sync.Once
+	fired  atomic.Bool
 	during func()
 }
 
 func (h *hooked) ManagedFleets(ctx context.Context) ([]cluster.ManagedFleet, error) {
 	fleets, err := h.Fake.ManagedFleets(ctx)
-	h.once.Do(h.during)
+	if h.fired.CompareAndSwap(false, true) {
+		h.during()
+	}
 	return fleets, err
 }
 
@@ -495,13 +506,13 @@ func promoted(t *testing.T, f *fixture) (d141, d142 store.Deployment) {
 	ctx := context.Background()
 	b141 := f.register(t, "141")
 	d141 = f.deploy(t, b141)
-	if err := f.svc.SetRoute(ctx, Stable, b141.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, b141.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
 	b142 := f.register(t, "142")
 	d142 = f.deploy(t, b142)
-	if err := f.svc.SetRoute(ctx, Stable, b142.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, b142.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
@@ -598,7 +609,7 @@ func TestFleetOfAReusedIDIsALeftover(t *testing.T) {
 	if b.ID != 1 || d.ID != 1 {
 		t.Fatalf("build %d, deployment %d: the test needs both to reuse ID 1", b.ID, d.ID)
 	}
-	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin"); err != nil {
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	f.reconcile(t)
@@ -639,12 +650,57 @@ func TestReclaimWaitsAgainAfterARollbackAndBack(t *testing.T) {
 		if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); err != nil {
 			t.Error(err)
 		}
-		if err := f.svc.SetRoute(ctx, Stable, d142.BuildID, "admin"); err != nil {
+		if err := f.svc.SetRoute(ctx, Stable, d142.BuildID, "admin", false); err != nil {
 			t.Error(err)
 		}
 	}}})
 	f.reconcile(t)
 	if _, _, ok := f.us.ManagedFleet(d141.Fleet); !ok || f.state(t, d141.ID) != store.StateDraining {
 		t.Fatal("the loop reclaimed a deployment that had just drained again, on its old retention")
+	}
+}
+
+// A route moves only to a build with a game server ready in each cluster it
+// is deployed in, unless asked to anyway; a rollback does not wait.
+func TestRouteWaitsForReadyGameServers(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	b := f.register(t, "141")
+	req := DeployRequest{BuildID: b.ID, Cluster: "us-1", Buffer: 2, MaxReplicas: 10, Rooms: 50, Resources: Defaults.Resources}
+	d, err := f.svc.Deploy(ctx, req, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deployed a moment ago: the loop has not started its Fleet yet.
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin", false); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("routing to a Fleet not started: %v", err)
+	}
+	f.reconcile(t)
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// A canary whose game servers are not ready is promoted only anyway.
+	next := f.register(t, "142")
+	dn := f.deploy(t, next)
+	if err := f.svc.SetRoute(ctx, Canary, next.ID, "admin", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.us.ScaleFleet(ctx, dn.Fleet, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin", false); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("promoting a canary with no game server ready: %v", err)
+	}
+	if err := f.svc.Promote(ctx, "billiards", "net7", "admin", true); err != nil {
+		t.Fatal(err)
+	}
+	// 141 drains to no game server; rolling back to it does not wait.
+	f.reconcile(t)
+	if fleet, _, _ := f.us.ManagedFleet(d.Fleet); fleet.Ready != 0 {
+		t.Fatalf("drained fleet = %+v", fleet)
+	}
+	if err := f.svc.Rollback(ctx, "billiards", Stable, "net7", "admin"); err != nil {
+		t.Fatal(err)
 	}
 }

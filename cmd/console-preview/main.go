@@ -192,12 +192,12 @@ func history(db *store.Store, releases *release.Service, keys *auth.Keys, fake *
 		if i == 0 {
 			channel = release.Stable
 		}
-		if err := releases.SetRoute(ctx, channel, int64(i+1), "admin"); err != nil {
+		if err := releases.SetRoute(ctx, channel, int64(i+1), "admin", true); err != nil {
 			return err
 		}
 		if i == 1 {
 			step(3 * time.Hour)
-			if err := releases.Promote(ctx, "billiards", compat, "admin"); err != nil {
+			if err := releases.Promote(ctx, "billiards", compat, "admin", true); err != nil {
 				return err
 			}
 			fake.SetAllocated("billiards-1", 1)

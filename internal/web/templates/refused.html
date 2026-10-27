@@ -5,5 +5,14 @@
     <p class="subline">{{.Data.Text}}</p>
   </div>
 </header>
-<a class="button" href="{{.Data.Back}}">返回</a>
+<div class="actions">
+<a class="button{{if .Data.Force}} primary{{end}}" href="{{.Data.Back}}">返回</a>
+{{- if .Data.Force}}
+<form action="{{.Data.Action}}" method="post">
+  {{- range $k, $vs := .Data.Values}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
+  <input type="hidden" name="force" value="1">
+  <button type="submit" data-confirm="确定现在就切？那些地区的新对局会分配失败，直到战斗服就绪。">仍然切换</button>
+</form>
+{{- end}}
+</div>
 {{end}}

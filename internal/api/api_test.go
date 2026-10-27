@@ -90,7 +90,10 @@ func newServerWith(t *testing.T, ready int, wrap func(Releases) Releases) (*http
 	if _, err := releases.Deploy(ctx, release.DeployRequest{BuildID: b.ID, Cluster: "us-1", Buffer: 2, MaxReplicas: 4, Rooms: 1, Resources: release.Defaults.Resources}, "test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := releases.SetRoute(ctx, release.Stable, b.ID, "test"); err != nil {
+	if err := releases.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := releases.SetRoute(ctx, release.Stable, b.ID, "test", false); err != nil {
 		t.Fatal(err)
 	}
 	svc := allocate.New(releases, dir)

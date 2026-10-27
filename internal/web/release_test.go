@@ -39,7 +39,8 @@ func (e *env) serve(t *testing.T) {
 		room.Fleet = d.Fleet
 		e.fake.AddRoom(room)
 	}
-	if err := e.releases.SetRoute(ctx, release.Stable, id, "admin"); err != nil {
+	e.reconcile(t)
+	if err := e.releases.SetRoute(ctx, release.Stable, id, "admin", false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -117,6 +118,7 @@ func TestReleaseThroughTheConsole(t *testing.T) {
 	}
 
 	e.expectRedirect(t, "/builds/1/deploy", deployForm("us-1"), "/builds/1")
+	e.reconcile(t)
 	e.expectRedirect(t, "/routes/set", url.Values{"channel": {"stable"}, "build": {"1"}, "back": {"/builds/1"}}, "/builds/1")
 	e.reconcile(t)
 	_, body = e.get(t, "/builds/1")
@@ -133,6 +135,7 @@ func TestReleaseThroughTheConsole(t *testing.T) {
 
 	// 142 to testers, then to everyone, then back.
 	e.expectRedirect(t, "/builds/2/deploy", deployForm("us-1"), "/builds/2")
+	e.reconcile(t)
 	e.expectRedirect(t, "/routes/set", url.Values{"channel": {"canary"}, "build": {"2"}}, "/routes")
 	e.reconcile(t)
 	_, body = e.get(t, "/routes")
@@ -200,6 +203,7 @@ func TestOverviewNamesTheBuildOfEachFleet(t *testing.T) {
 	e.signIn(t)
 	e.register(t, "141")
 	e.expectRedirect(t, "/builds/1/deploy", deployForm("us-1"), "/builds/1")
+	e.reconcile(t)
 	e.expectRedirect(t, "/routes/set", url.Values{"channel": {"stable"}, "build": {"1"}}, "/routes")
 	e.reconcile(t)
 	if fleets, _ := e.fake.ManagedFleets(context.Background()); len(fleets) != 1 {
@@ -227,7 +231,9 @@ func TestPromotingEndsTheCanary(t *testing.T) {
 	e.register(t, "141")
 	e.register(t, "142")
 	e.expectRedirect(t, "/builds/1/deploy", deployForm("us-1"), "/builds/1")
+	e.reconcile(t)
 	e.expectRedirect(t, "/builds/2/deploy", deployForm("us-1"), "/builds/2")
+	e.reconcile(t)
 	// Canary where stable already is ends at once: it would only keep
 	// testers apart from everyone else.
 	for _, channel := range []string{"stable", "canary"} {
@@ -264,6 +270,7 @@ func TestTwoCompatVersionsServeSideBySide(t *testing.T) {
 	e.register(t, "200")
 	for _, id := range []string{"1", "2"} {
 		e.expectRedirect(t, "/builds/"+id+"/deploy", deployForm("us-1"), "/builds/"+id)
+		e.reconcile(t)
 		e.expectRedirect(t, "/routes/set", url.Values{"channel": {"stable"}, "build": {id}}, "/routes")
 	}
 	e.reconcile(t)
@@ -338,4 +345,23 @@ func TestChangesNeedASessionAndThisSite(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-site form: %d", resp.StatusCode)
 	}
+}
+
+// A route to a build with no game server ready is refused with a way to move
+// it anyway: the same form again, with force.
+func TestMoveARouteAnywayFromTheRefusal(t *testing.T) {
+	e := newEnv(t)
+	e.signIn(t)
+	e.register(t, "141")
+	e.expectRedirect(t, "/builds/1/deploy", deployForm("us-1"), "/builds/1")
+	// No pass of the loop yet: the Fleet has not started.
+	resp, body := e.post(t, "/routes/set", url.Values{"channel": {"stable"}, "build": {"1"}, "back": {"/routes"}})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("routing to a Fleet not started: %d", resp.StatusCode)
+	}
+	contains(t, visible(body), "还没有能接新局的战斗服", "仍然切换")
+	contains(t, body, `action="/routes/set"`, `name="channel" value="stable"`, `name="build" value="1"`, `name="force" value="1"`)
+	e.expectRedirect(t, "/routes/set", url.Values{"channel": {"stable"}, "build": {"1"}, "back": {"/routes"}, "force": {"1"}}, "/routes")
+	_, body = e.get(t, "/routes")
+	contains(t, visible(body), "billiards dm-v7 #1 版本 141")
 }
