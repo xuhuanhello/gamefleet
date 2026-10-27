@@ -106,11 +106,17 @@ func (s *Service) reconcileSite(ctx context.Context, site sites.Site, deployment
 	live := map[string]bool{}
 	var errs []error
 	for _, room := range rooms {
-		if len(room.Stale) == 0 {
-			continue
+		if len(room.Stale) > 0 {
+			if err := site.Cluster.ForgetMatches(ctx, room.ID, room.Stale); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", room.ID, err))
+			}
 		}
-		if err := site.Cluster.ForgetMatches(ctx, room.ID, room.Stale); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", room.ID, err))
+		if room.Notes > cluster.FullNotes && !room.Retiring {
+			s.log.Warn("game server notes near the Kubernetes limit; it takes no new matches", "cluster", site.Name,
+				"room", room.ID, "bytes", room.Notes, "stale", len(room.Stale))
+			if err := site.Cluster.MarkRetiring(ctx, room.ID, true); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", room.ID, err))
+			}
 		}
 	}
 	for _, d := range deployments {

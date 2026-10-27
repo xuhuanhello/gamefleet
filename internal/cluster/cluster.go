@@ -90,6 +90,8 @@ type Room struct {
 	// Matches whose annotations (their note, or a request to end them) are
 	// still there though the game server no longer runs them.
 	Stale []string `json:"-"`
+	// Notes is how much all its annotations take, keys and values.
+	Notes int `json:"-"`
 }
 
 // Match is one match a game server runs.
@@ -128,6 +130,13 @@ func (r Room) Free() int { return max(0, r.Capacity-len(r.Matches)) }
 const (
 	MaxMatchNote = 2 << 10
 	MaxRooms     = 80
+	// FullNotes is how much a game server's annotations may take before it
+	// stops taking matches: notes of matches that are over pile up when
+	// forgetting them keeps failing, or when its matches end and start
+	// again faster than the loop passes. It finishes the matches it runs,
+	// and is replaced once empty. A quarter of Kubernetes' 256 KiB stays
+	// for what piles up meanwhile.
+	FullNotes = 192 << 10
 )
 
 // NoteSize is how much the note of the allocation's match takes, key and
@@ -401,6 +410,9 @@ func (c *Client) room(gs gameServer) Room {
 		// A note that does not parse still leaves the match listed.
 		_ = json.Unmarshal([]byte(gs.Metadata.Annotations[AnnotationMatchPrefix+id]), &m.MatchInfo)
 		room.Matches = append(room.Matches, m)
+	}
+	for key, value := range gs.Metadata.Annotations {
+		room.Notes += len(key) + len(value)
 	}
 	stale := map[string]bool{}
 	for key := range gs.Metadata.Annotations {

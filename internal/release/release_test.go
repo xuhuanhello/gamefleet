@@ -738,3 +738,38 @@ func TestWhatMakesABuildReady(t *testing.T) {
 		}
 	}
 }
+
+// unforgetting is a cluster where forgetting the notes of matches fails.
+type unforgetting struct{ *clustertest.Fake }
+
+func (unforgetting) ForgetMatches(context.Context, string, []string) error {
+	return errors.New("connection reset")
+}
+
+// A game server whose notes near the Kubernetes limit, because forgetting
+// the ones of matches that are over keeps failing, stops taking matches
+// before allocation to it fails; it finishes its matches, and goes when
+// empty.
+func TestAGameServerFullOfNotesStopsTakingMatches(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	b := f.register(t, "141")
+	d := f.deploy(t, b)
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin", false); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: unforgetting{f.us}})
+	f.us.AddRoom(cluster.Room{ID: "full", Fleet: d.Fleet, State: "Allocated", Capacity: 50, LastAllocated: f.now,
+		Matches: []cluster.Match{{ID: "m-1"}}, Stale: []string{"m-0"}, Notes: cluster.FullNotes + 1})
+	f.us.AddRoom(cluster.Room{ID: "fine", Fleet: d.Fleet, State: "Allocated", Capacity: 50, LastAllocated: f.now,
+		Matches: []cluster.Match{{ID: "m-2"}}, Notes: 1 << 10})
+	if err := f.svc.Reconcile(ctx); err == nil {
+		t.Fatal("forgetting failed and the pass said nothing")
+	}
+	if !f.us.Retiring("full") || f.us.Retiring("fine") {
+		t.Fatalf("retiring: full %v, fine %v", f.us.Retiring("full"), f.us.Retiring("fine"))
+	}
+	if r, _ := f.us.Get(ctx, "full"); r == nil {
+		t.Fatal("a game server with a match running was stopped")
+	}
+}

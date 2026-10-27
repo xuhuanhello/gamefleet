@@ -169,6 +169,9 @@ func TestRoomsListTheirMatchesAndForgottenNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := rooms[0]
+	if r.Notes < 300 || r.Notes > 400 {
+		t.Errorf("notes take %d bytes", r.Notes)
+	}
 	if len(r.Matches) != 2 || r.Matches[1].ID != "m-1" || r.Matches[1].Channel != "canary" || r.Matches[0].ID != "m-2" ||
 		!reflect.DeepEqual(r.Stale, []string{"m-gone", "m-old"}) || r.Free() != 1 ||
 		!r.LastAllocated.Equal(time.Date(2026, 10, 21, 10, 0, 0, 123456789, time.UTC)) {
