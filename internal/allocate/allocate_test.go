@@ -155,6 +155,14 @@ func TestAllocateRejectsMalformedRequests(t *testing.T) {
 		"same seat twice":      func(r *Request) { r.Players[1].Seat = 0 },
 		"same player twice":    func(r *Request) { r.Players[1].UserID = "u-1" },
 		"negative seat":        func(r *Request) { r.Players[0].Seat = -1 },
+		// Sixteen players with the longest IDs make a note larger than a
+		// game server has room for.
+		"too long a note": func(r *Request) {
+			r.Players = nil
+			for i := range 16 {
+				r.Players = append(r.Players, Player{UserID: fmt.Sprintf("%0128d", i), Seat: i})
+			}
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

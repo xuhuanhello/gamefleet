@@ -66,7 +66,7 @@
         <label class="span">集群
           <select name="cluster">{{range .Data.Clusters}}<option>{{.}}</option>{{end}}</select>
         </label>
-        <label>每个战斗服最多几局<input type="number" name="rooms" value="{{.Data.Form.Rooms}}" min="1" max="1000" required></label>
+        <label>每个战斗服最多几局<input type="number" name="rooms" value="{{.Data.Form.Rooms}}" min="1" max="80" required></label>
         <label>保持空闲战斗服<input type="number" name="buffer" value="{{.Data.Form.Buffer}}" min="1" max="50" required></label>
         <label>最多几个战斗服<input type="number" name="max" value="{{.Data.Form.MaxReplicas}}" min="1" max="500" required></label>
         <label>CPU 请求（m）<input type="number" name="cpuRequest" value="{{.Data.Form.Resources.CPURequest}}" min="10" required></label>

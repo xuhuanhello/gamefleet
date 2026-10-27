@@ -206,8 +206,8 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest, actor string) (
 		return store.Deployment{}, invalid("空闲战斗服要在 1 到 50 个之间")
 	case req.MaxReplicas < req.Buffer || req.MaxReplicas > 500:
 		return store.Deployment{}, invalid("上限要不小于空闲数，最多 500")
-	case req.Rooms < 1 || req.Rooms > 1000:
-		return store.Deployment{}, invalid("每个战斗服的局数要在 1 到 1000 之间")
+	case req.Rooms < 1 || req.Rooms > cluster.MaxRooms:
+		return store.Deployment{}, invalid("每个战斗服的局数要在 1 到 %d 之间", cluster.MaxRooms)
 	case r.CPURequest < 10 || r.CPULimit < r.CPURequest || r.CPULimit > 16000:
 		return store.Deployment{}, invalid("CPU 请求至少 10m，上限要在请求和 16000m 之间")
 	case r.MemoryRequest < 16 || r.MemoryLimit < r.MemoryRequest || r.MemoryLimit > 65536:

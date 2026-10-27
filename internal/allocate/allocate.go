@@ -298,6 +298,16 @@ func (r Request) validate() error {
 		users[p.UserID] = true
 		seats[p.Seat] = true
 	}
+	// The match's note on its game server holds the players, the channel and
+	// the compat version, and has to fit next to the game server's other
+	// matches.
+	players, err := json.Marshal(r.Players)
+	if err != nil {
+		return err
+	}
+	if cluster.NoteSize(cluster.Allocation{MatchID: r.MatchID, Channel: r.Channel, Compat: r.Compat, Players: players}) > cluster.MaxMatchNote {
+		return invalid("players")
+	}
 	return nil
 }
 

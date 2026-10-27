@@ -329,3 +329,25 @@ func TestTooLargeAResponseIsAnError(t *testing.T) {
 		t.Fatalf("err = %v, want one that says the response is too large", err)
 	}
 }
+
+// The notes of a full game server fit in its annotations with room to
+// spare: MaxRooms matches at MaxMatchNote each, a quarter as many again of
+// matches that are over and not yet forgotten, a request to end each, and
+// 16 KiB for Agones' and Kubernetes' own annotations.
+func TestNotesFitInAGameServer(t *testing.T) {
+	endNote := len(AnnotationEndPrefix) + MaxMatchIDLength + len(time.RFC3339Nano)
+	notes := MaxRooms * (MaxMatchNote + endNote) * 5 / 4
+	if limit := 256<<10 - 16<<10; notes > limit {
+		t.Fatalf("a full game server's notes take %d bytes, more than the %d there is room for", notes, limit)
+	}
+}
+
+// The note of a match with two players is a small part of what a match may
+// take.
+func TestNoteSizeOfAMatch(t *testing.T) {
+	players := json.RawMessage(`[{"userId":"u-1","seat":0},{"userId":"u-2","seat":1}]`)
+	n := NoteSize(Allocation{MatchID: "8c1f0c7e-5d1e-4f4c-9a59-3c3b8e0f2a11", Channel: "stable", Compat: "dm-v7", Players: players})
+	if n < 150 || n > 300 {
+		t.Fatalf("note size = %d", n)
+	}
+}

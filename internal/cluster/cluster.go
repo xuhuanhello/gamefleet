@@ -119,6 +119,25 @@ func (r Room) Match(id string) (Match, bool) {
 // Free is how many more matches the game server can take.
 func (r Room) Free() int { return max(0, r.Capacity-len(r.Matches)) }
 
+// Kubernetes keeps all the annotations of an object under 256 KiB, and a
+// game server carries a note for each match it runs, one for each that is
+// over until the loop forgets it, and one for each it is asked to end. So a
+// match's note, key and value, is at most MaxMatchNote, and a game server
+// runs at most MaxRooms matches at a time; TestNotesFitInAGameServer checks
+// that these leave room for Agones' own annotations.
+const (
+	MaxMatchNote = 2 << 10
+	MaxRooms     = 80
+)
+
+// NoteSize is how much the note of the allocation's match takes, key and
+// value, at its longest.
+func NoteSize(a Allocation) int {
+	latest := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	info, _ := json.Marshal(MatchInfo{Players: a.Players, Channel: a.Channel, Compat: a.Compat, Allocated: latest})
+	return len(AnnotationMatchPrefix) + len(a.MatchID) + len(info)
+}
+
 // Allocation describes the match that needs a room.
 type Allocation struct {
 	Fleet   string

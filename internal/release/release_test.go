@@ -406,6 +406,7 @@ func TestDeployChecks(t *testing.T) {
 		"max below":       func(r *DeployRequest) { r.MaxReplicas = 1 },
 		"limit below":     func(r *DeployRequest) { r.Resources.CPULimit = 100 },
 		"tiny memory":     func(r *DeployRequest) { r.Resources.MemoryRequest = 1 },
+		"too many rooms":  func(r *DeployRequest) { r.Rooms = cluster.MaxRooms + 1 },
 	}
 	for name, mutate := range cases {
 		r := base
