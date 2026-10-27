@@ -87,7 +87,7 @@ curl -fsSL https://github.com/xuhuanhello/gamefleet/releases/download/v2.1.0/gam
 sh install.sh --domain fleet.example.com --email 你的邮箱
 ```
 
-不支持降级：新版本可能改了数据库结构。要回到旧版本，先停 GameFleet，用升级前的备份换回数据库，再用旧版本的部署文件和镜像运行安装脚本。
+不能直接降级：新版本可能改了数据库结构，旧版本打不开。要回到旧版本，照下面"退回旧版本"做。
 
 ## 备份和恢复
 
@@ -106,7 +106,7 @@ cd /opt/gamefleet && umask 077 && d=backup/$(date +%Y%m%d-%H%M%S) && mkdir -p $d
   docker compose stop gamefleet && docker compose cp gamefleet:/var/lib/gamefleet/. $d/; docker compose start gamefleet
 ```
 
-**恢复：** 停掉 GameFleet，删掉数据库旁边的两个临时文件（`-wal`、`-shm`，不删的话 SQLite 会把它们套到恢复的数据库上），再把备份放回卷里，属主改成 GameFleet 的用户（65532）：
+**恢复（版本不变）：** 停掉 GameFleet，删掉数据库旁边的两个临时文件（`-wal`、`-shm`，不删的话 SQLite 会把它们套到恢复的数据库上），再把备份放回卷里，属主改成 GameFleet 的用户（65532）：
 
 ```sh
 cd /opt/gamefleet && v=$(docker volume inspect -f "{{.Mountpoint}}" gamefleet_gamefleet_data) &&
@@ -116,14 +116,43 @@ cd /opt/gamefleet && v=$(docker volume inspect -f "{{.Mountpoint}}" gamefleet_ga
 
 备份之后才做的改动（新构建、新部署、新的 key）都没有了。集群里多出来的部署，GameFleet 当作不认识的部署处理：等上面的对局打完就删掉。
 
+这是同一个版本里的恢复。要连版本一起退回去，用下面的"退回旧版本"，不要用这里最后的 `docker compose start`：那样起来的可能还是新版本，会把刚恢复的数据库再迁移一次。
+
+**退回旧版本：** 在线更新失败、新旧版本都没起来，或者新版本有问题要退回去时，按这个顺序做。先停更新器，免得它还在换版本时你动了数据库；再换回这次更新前的备份；最后用旧版本的部署文件和镜像重新安装，让容器按旧镜像重建：
+
+```sh
+cd /opt/gamefleet
+systemctl stop gamefleet-updater && docker compose stop gamefleet
+cat update/status.json                 # 这次更新的结果；2.1.0 起的更新器会写出备份的文件名
+v=$(docker volume inspect -f "{{.Mountpoint}}" gamefleet_gamefleet_data)
+ls -lt $v/backups/                     # 更新前的备份：gamefleet-旧版本-更新时间.db，一般是最新的一份
+rm -f $v/gamefleet.db-wal $v/gamefleet.db-shm update/request.json update/status.json
+install -o 65532 -g 65532 -m 644 $v/backups/gamefleet-2.0.5-20261027-101010.db $v/gamefleet.db
+# 换成要回到的版本
+curl -fsSL https://github.com/xuhuanhello/gamefleet/releases/download/v2.0.5/gamefleet-deploy.tar.gz | tar -xzf -
+sh install.sh --domain "$(sed -n 's/^GAMEFLEET_DOMAIN=//p' .env)" --email "$(sed -n 's/^ACME_EMAIL=//p' .env)"
+```
+
+安装脚本用旧版本的镜像重建 GameFleet 的容器，再把更新器也换成旧版本、重新启动。备份之后的改动都没有了，和上面的恢复一样。
+
 **恢复演练时，别让恢复出来的 GameFleet 连上线上的集群。** 它一启动就会连上各个集群，按它那份旧数据把不认识的部署缩到 0 再删掉。
 
 - **数据库检查：** 用 `sqlite3` 打开恢复出来的 `gamefleet.db`，看构建、部署和 key 都在、是最新的。这只说明数据库能用。
-- **完整演练**（数据库、配置、镜像仓库都恢复，服务能起来）：在另一台机器上恢复，启动 GameFleet 之前，先挡住它到每个集群 API 的连接。集群的 API 地址是接入时登记的，不一定是 6443 端口，从恢复出来的数据库里查：
+- **完整演练**（数据库、配置、镜像仓库都恢复，服务能起来）：在另一台机器上恢复。启动 GameFleet 之前，先挡住这台机器到每个集群 API 的连接。最省事的是在云控制台给它的安全组加出站拒绝规则，这对容器发出的连接也管用。集群的 API 地址是接入时登记的，不一定是 6443 端口，从恢复出来的数据库里查。
+
+  在机器上用防火墙挡的话，规则要加在 `DOCKER-USER` 链上：GameFleet 在 Docker 容器里，`OUTPUT` 链只管宿主机自己发出的连接，挡不住它。
 
   ```sh
   sqlite3 gamefleet.db "SELECT name, server FROM clusters"   # 比如 us-1|https://203.0.113.7:6443
-  iptables -I OUTPUT -d 203.0.113.7 -j REJECT                # 每个地址一条
+  iptables -I DOCKER-USER -d 203.0.113.7 -j REJECT           # 每个地址一条；装好 Docker 以后才有这条链
+  ```
+
+  然后先只建容器和网络、不启动，从 GameFleet 所在的容器网络试一下，确实连不上再启动：
+
+  ```sh
+  cd /opt/gamefleet && docker compose create
+  docker run --rm --network gamefleet_default curlimages/curl -sS -m 5 https://203.0.113.7:6443   # 要失败
+  docker compose up -d
   ```
 
   起来以后能登录控制台、构建页列着各个构建、镜像拉得到，就算演练通过；集群页显示连不上是对的。

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -158,20 +159,41 @@ func block(t *testing.T, script, first, last string) string {
 	return ""
 }
 
+// systemPath matches a path into the machine's own directories.
+var systemPath = regexp.MustCompile(`(^|[\s>"'=(])/(usr|etc|var|tmp|opt|run|lib|bin|sbin|root|home|srv)/[^\s"']*`)
+
 // runBlock runs part of cluster.sh with its helpers stubbed, and the commands
-// it runs recorded. It returns what the part printed and what it ran.
-func runBlock(t *testing.T, part, setup string) (out, ran string) {
+// it runs recorded. The part must name no file outside dir but those it
+// replaces here with stand-ins: it runs on the machine of whoever runs the
+// tests. It returns what the part printed and what it ran.
+func runBlock(t *testing.T, dir, part, setup string, paths ...string) (out, ran string) {
 	t.Helper()
-	dir := t.TempDir()
 	log := filepath.Join(dir, "ran")
 	bin := filepath.Join(dir, "bin")
-	os.Mkdir(bin, 0o755)
-	for _, name := range []string{"systemctl", "curl"} {
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubs := map[string]string{
+		filepath.Join(bin, "systemctl"):      "systemctl",
+		filepath.Join(bin, "curl"):           "curl",
+		filepath.Join(dir, "k3s-killall.sh"): "k3s-killall.sh",
+	}
+	for path, name := range stubs {
 		stub := "#!/bin/sh\necho \"" + name + " $*\" >>" + log + "\n"
 		if name == "curl" {
 			stub += "exit 1\n" // no download: the install stops there
 		}
-		os.WriteFile(filepath.Join(bin, name), []byte(stub), 0o755)
+		if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One replacer, which never looks again at what it put in: dir may itself
+	// be under /tmp.
+	pairs := append([]string{"/usr/local/bin/k3s-killall.sh", filepath.Join(dir, "k3s-killall.sh")}, paths...)
+	part = strings.NewReplacer(append(pairs, "/tmp/", dir+"/")...).Replace(part)
+	// The test's own directory may be under /tmp: leave it out of the check.
+	if m := systemPath.FindString(strings.ReplaceAll(part, dir, "TESTDIR")); m != "" {
+		t.Fatalf("the part names %q, a file of the machine running the tests:\n%s", m, part)
 	}
 	script := "set -u\nsay() { :; }\nstatus() { :; }\nfail() { echo \"fail: $*\"; exit 1; }\nK3S_VERSION=v0\n" +
 		setup + "\n" + part + "\necho \"configured=${configured:-} installed=${installed:-}\"\n"
@@ -188,10 +210,13 @@ func runBlock(t *testing.T, part, setup string) (out, ran string) {
 func TestClusterScriptResumesFromWhatIsThere(t *testing.T) {
 	srv := serve(t, &joins{})
 	_, script := get(t, srv.URL+"/install/cluster.sh")
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	k3s, unit, config := filepath.Join(dir, "k3s"), filepath.Join(dir, "k3s.service"), filepath.Join(dir, "config.yaml")
 	detect := block(t, script, "configured='' installed=''", "fi")
-	detect = strings.NewReplacer("/usr/local/bin/k3s", k3s, "/etc/systemd/system/k3s.service", unit).Replace(detect)
+	paths := []string{"/usr/local/bin/k3s", k3s, "/etc/systemd/system/k3s.service", unit}
 	setup := "CONFIG=" + config
 	cases := []struct {
 		name                    string
@@ -207,18 +232,22 @@ func TestClusterScriptResumesFromWhatIsThere(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			for _, f := range []string{k3s, unit, config} {
-				os.Remove(f)
+				if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
 			}
-			if c.marked {
-				os.WriteFile(config, []byte("# gamefleet cluster sg-1\n"), 0o600)
+			for _, f := range []struct {
+				want       bool
+				path, data string
+				mode       os.FileMode
+			}{{c.marked, config, "# gamefleet cluster sg-1\n", 0o600}, {c.binary, k3s, "#!/bin/sh\n", 0o755}, {c.service, unit, "[Unit]\n", 0o644}} {
+				if f.want {
+					if err := os.WriteFile(f.path, []byte(f.data), f.mode); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
-			if c.binary {
-				os.WriteFile(k3s, []byte("#!/bin/sh\n"), 0o755)
-			}
-			if c.service {
-				os.WriteFile(unit, []byte("[Unit]\n"), 0o644)
-			}
-			if out, _ := runBlock(t, detect, setup); !strings.Contains(out, c.want) {
+			if out, _ := runBlock(t, dir, detect, setup, paths...); !strings.Contains(out, c.want) {
 				t.Fatalf("got %q, want %q", out, c.want)
 			}
 		})
@@ -227,12 +256,16 @@ func TestClusterScriptResumesFromWhatIsThere(t *testing.T) {
 	start := block(t, script, `if [ -z "$installed" ]; then`, "fi")
 	for _, c := range []struct{ name, setup, want string }{
 		{"not installed", "installed='' config_changed=''", "curl -sfL --max-time 60 https://get.k3s.io"},
-		{"config changed", "installed=1 config_changed=1", "systemctl start --no-block k3s"},
+		{"config changed", "installed=1 config_changed=1", "k3s-killall.sh \nsystemctl start --no-block k3s"},
 		// An earlier run may have stopped before it started K3s.
 		{"config unchanged", "installed=1 config_changed=''", "systemctl start --no-block k3s"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if out, ran := runBlock(t, start, c.setup); !strings.Contains(ran, c.want) {
+			run, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out, ran := runBlock(t, run, start, c.setup); !strings.Contains(ran, c.want) {
 				t.Fatalf("ran %q (printed %q), want %q", ran, out, c.want)
 			}
 		})
