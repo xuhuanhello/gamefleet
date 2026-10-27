@@ -119,6 +119,7 @@ func run(configPath string, log *slog.Logger) error {
 		_, at, err := store.NewestDailyBackup(backups)
 		return at, err
 	})
+	monitor.WatchOffsite(func() (time.Time, error) { return store.LastOffsite(backups) })
 	monitor.Watch([]string{"release", "clusters"}, func() []string {
 		var names []string
 		for _, s := range dir.All() {

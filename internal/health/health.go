@@ -39,8 +39,9 @@ const (
 type Monitor struct {
 	now func() time.Time
 	// newestBackup returns when the newest daily backup was written, zero
-	// when there is none.
-	newestBackup func() (time.Time, error)
+	// when there is none; offsite when the backups were last copied off the
+	// machine.
+	newestBackup, offsite func() (time.Time, error)
 
 	// What Status watches: the loops by name, and the clusters there are.
 	loops    []string
@@ -142,6 +143,10 @@ type Status struct {
 	Checks []Check `json:"checks"`
 }
 
+// WatchOffsite checks the copies off the machine too: offsite returns when
+// the job that makes them last succeeded, zero when it never did.
+func (m *Monitor) WatchOffsite(offsite func() (time.Time, error)) { m.offsite = offsite }
+
 // Watch names the loops to check and where the clusters come from.
 func (m *Monitor) Watch(loops []string, clusters func() []string) {
 	m.loops, m.clusters = loops, clusters
@@ -228,6 +233,20 @@ func (m *Monitor) Check(loops, clusters []string) Status {
 		default:
 			c.OK = now.Sub(at) <= StaleBackup
 			c.Detail = fmt.Sprintf("最新一份是 %s 前的", age(now.Sub(at)))
+		}
+		checks = append(checks, c)
+	}
+	if m.offsite != nil {
+		c := Check{Name: "offsite"}
+		at, err := m.offsite()
+		switch {
+		case err != nil:
+			c.Detail = "读不到机外备份的记录，详情看 GameFleet 的日志"
+		case at.IsZero():
+			c.Detail = "还没有机外备份成功的记录：机外备份没有配好，或者从没成功过"
+		default:
+			c.OK = now.Sub(at) <= StaleBackup
+			c.Detail = fmt.Sprintf("上一次成功是 %s 前", age(now.Sub(at)))
 		}
 		checks = append(checks, c)
 	}

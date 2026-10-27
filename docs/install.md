@@ -105,23 +105,22 @@ sh install.sh --domain fleet.example.com --email 你的邮箱
 
 **这些备份都还在管理机的盘上，盘坏了会一起没。** 要再拷到机器外面去：
 
-- **数据库、配置和镜像仓库：** 用 rclone（或者 coscli）每天同步到对象存储。存储桶设成私有，开版本控制；管理机上用的子账号只给写，不给删。数据库和配置里有各集群的 token，按密钥材料保管。
+- **数据库、配置和镜像仓库：** 用 rclone（或者 coscli）每天复制到对象存储。存储桶设成私有，开版本控制，用生命周期规则决定留多久；管理机上用的子账号只给写，不给删，所以用只增加、不删除的 `rclone copy`，不用 `sync`。数据库和配置里有各集群的 token，按密钥材料保管。
 
   ```sh
   # /etc/cron.d/gamefleet-offsite，rclone 里先配好一个叫 cos 的远端（provider TencentCOS）
-  45 4 * * * root rclone sync /var/lib/docker/volumes/gamefleet_gamefleet_data/_data/backups cos:你的桶/gamefleet/backups
-  50 4 * * * root rclone copy /opt/gamefleet/private cos:你的桶/gamefleet/private
-  55 4 * * * root rclone copy /var/lib/docker/volumes/gamefleet_registry_data/_data cos:你的桶/gamefleet/registry
+  # 全部成功才更新 offsite-ok，GameFleet 的状态接口看它判断机外备份有没有断。
+  45 4 * * * root rclone copy /var/lib/docker/volumes/gamefleet_gamefleet_data/_data/backups cos:你的桶/gamefleet/backups && rclone copy /opt/gamefleet cos:你的桶/gamefleet/opt --exclude "update/**" && rclone copy /var/lib/docker/volumes/gamefleet_registry_data/_data cos:你的桶/gamefleet/registry && touch /var/lib/docker/volumes/gamefleet_gamefleet_data/_data/backups/offsite-ok
   ```
 
-  镜像仓库的文件写进去就不再变，`rclone copy` 只传新增的部分。
+  复制镜像仓库要挑 CI 不推送、也不在清理空间的时候（上面是凌晨），否则可能复制到一半写好的镜像。镜像的文件写进去就不再变，`rclone copy` 只传新增的部分，下一次会补上这一次没赶上的。
 - **控制面在这台机器上的集群：** 用云厂商的快照整盘保存。轻量应用服务器没有定期快照，可以用 tccli 定时调接口打快照，满额前先删最旧的一个：
 
   ```sh
   tccli lighthouse CreateInstanceSnapshot --region 地域 --InstanceId 实例ID --SnapshotName gamefleet-$(date +%Y%m%d)
   ```
 
-**确认备份是新的：** 控制台和状态接口会在最新一份每日备份超过 26 小时时报警，见[监控](#监控)。
+**确认备份是新的：** 最新一份每日备份、或者上一次机外复制成功（`offsite-ok`）超过 26 小时，控制台和状态接口都会报警，见[监控](#监控)。机外复制还没配好时，状态接口一直报这一项。
 
 **手动备份：** GameFleet 要停几秒，拷出来的文件才完整。这几秒里分配接口不应答，正在打的对局不受影响。
 
@@ -204,6 +203,7 @@ GameFleet 自己不发告警，要接一个外部的监控。它给监控准备�
 | `cluster 集群名` | 2 分钟没连上这个集群 |
 | `allocation` | 最近 5 分钟至少 5 次分配、一半以上失败（集群连不上、满了也算；请求本身写错、路由不存在不算）；或者有一次超过 10 秒 |
 | `backup` | 最新一份每日备份超过 26 小时，或者一份都没有 |
+| `offsite` | 机外复制上一次成功（`backups/offsite-ok` 的时间）超过 26 小时，或者从没成功过，见[备份和恢复](#备份和恢复) |
 
 同样的问题也写在控制台总览的最上面。
 

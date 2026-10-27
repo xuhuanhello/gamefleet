@@ -381,3 +381,19 @@ func TestDailyBackups(t *testing.T) {
 		t.Fatalf("newest = %s %v %v", newest, at, err)
 	}
 }
+
+func TestLastOffsite(t *testing.T) {
+	dir := t.TempDir()
+	if at, err := LastOffsite(dir); err != nil || !at.IsZero() {
+		t.Fatalf("no marker: %v, %v", at, err)
+	}
+	when := time.Date(2026, 10, 27, 4, 50, 0, 0, time.UTC)
+	path := filepath.Join(dir, OffsiteMarker)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(path, when, when)
+	if at, err := LastOffsite(dir); err != nil || !at.Equal(when) {
+		t.Fatalf("marker: %v, %v", at, err)
+	}
+}

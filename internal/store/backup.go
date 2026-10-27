@@ -98,6 +98,23 @@ func pruneDaily(dir string) {
 	}
 }
 
+// OffsiteMarker is the file in the backups directory that the job copying
+// them off the machine touches once it succeeded; see docs/install.md.
+const OffsiteMarker = "offsite-ok"
+
+// LastOffsite returns when the job copying the backups off the machine last
+// succeeded, zero when it never did.
+func LastOffsite(dir string) (time.Time, error) {
+	info, err := os.Stat(filepath.Join(dir, OffsiteMarker))
+	if os.IsNotExist(err) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
+}
+
 // NewestDailyBackup returns the newest daily backup in dir and when it was
 // written, or "" when there is none.
 func NewestDailyBackup(dir string) (string, time.Time, error) {

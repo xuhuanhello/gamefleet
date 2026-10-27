@@ -131,3 +131,21 @@ func TestALoopThatKeepsFailing(t *testing.T) {
 		t.Fatalf("after a good pass: %+v", l)
 	}
 }
+
+func TestOffsite(t *testing.T) {
+	c := &clock{time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
+	var last time.Time
+	m := New(c.now, nil)
+	m.WatchOffsite(func() (time.Time, error) { return last, nil })
+	if o := check(t, m.Check(nil, nil), "offsite"); o.OK {
+		t.Fatalf("never copied: %+v", o)
+	}
+	last = c.t.Add(-time.Hour)
+	if o := check(t, m.Check(nil, nil), "offsite"); !o.OK {
+		t.Fatalf("copied an hour ago: %+v", o)
+	}
+	last = c.t.Add(-StaleBackup - time.Minute)
+	if o := check(t, m.Check(nil, nil), "offsite"); o.OK {
+		t.Fatalf("stale: %+v", o)
+	}
+}
