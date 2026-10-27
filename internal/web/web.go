@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -46,8 +47,11 @@ type Console struct {
 	log      *slog.Logger
 	updates  Updates
 	monitor  *health.Monitor
-	now      func() time.Time
-	pages    map[string]*template.Template
+	// lookupHost resolves GameFleet's host name, for the address a cluster
+	// sees it at.
+	lookupHost func(string) ([]string, error)
+	now        func() time.Time
+	pages      map[string]*template.Template
 }
 
 // Options is everything the console uses.
@@ -64,7 +68,9 @@ type Options struct {
 	// Monitor, when set, puts what needs a person at the top of the
 	// overview.
 	Monitor *health.Monitor
-	Log     *slog.Logger
+	// LookupHost resolves host names; net.LookupHost when nil.
+	LookupHost func(string) ([]string, error)
+	Log        *slog.Logger
 }
 
 // SessionCookie holds the session token.
@@ -89,8 +95,11 @@ func New(o Options) (*Console, error) {
 		// A build from source with no updater: nothing to check or apply.
 		o.Updates = update.New(update.Options{Current: "dev"})
 	}
-	c := &Console{host: o.Host, sites: o.Sites, clusters: o.Clusters, auth: o.Auth, apiKeys: o.Keys, store: o.Store, releases: o.Releases, log: o.Log, updates: o.Updates, monitor: o.Monitor,
+	c := &Console{host: o.Host, sites: o.Sites, clusters: o.Clusters, auth: o.Auth, apiKeys: o.Keys, store: o.Store, releases: o.Releases, log: o.Log, updates: o.Updates, monitor: o.Monitor, lookupHost: o.LookupHost,
 		now: time.Now, pages: map[string]*template.Template{}}
+	if c.lookupHost == nil {
+		c.lookupHost = net.LookupHost
+	}
 	funcs := template.FuncMap{
 		"age":          c.age,
 		"breakable":    breakable,

@@ -2,6 +2,7 @@ package health
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func TestLoopsAndClusters(t *testing.T) {
 	if s := m.Check(loops, clusters); s.OK || check(t, s, "loop release").OK || check(t, s, "cluster us-1").OK {
 		t.Fatalf("nothing ran for long: %+v", s)
 	}
-	m.Pass("release")
+	m.Pass("release", nil)
 	m.Contact("us-1", nil)
 	m.Contact("sg-1", errors.New("connection refused"))
 	s := m.Check(loops, clusters)
@@ -98,7 +99,7 @@ func TestBackup(t *testing.T) {
 // The parts that report to a monitor run without one.
 func TestNilMonitor(t *testing.T) {
 	var m *Monitor
-	m.Pass("release")
+	m.Pass("release", nil)
 	m.Contact("us-1", nil)
 	m.Allocation(time.Second, false)
 }
@@ -110,4 +111,23 @@ func TestStatusWatchesWhatItIsTold(t *testing.T) {
 	s := m.Status()
 	check(t, s, "loop release")
 	check(t, s, "cluster us-1")
+}
+
+// A loop that gets through every pass and fails in each needs a person.
+func TestALoopThatKeepsFailing(t *testing.T) {
+	c := &clock{time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
+	m := New(c.now, nil)
+	m.Pass("release", nil)
+	for range 10 {
+		c.t = c.t.Add(15 * time.Second)
+		m.Pass("release", errors.New("cluster us-1: apply secret: forbidden"))
+	}
+	l := check(t, m.Check([]string{"release"}, nil), "loop release")
+	if l.OK || !strings.Contains(l.Detail, "每轮都出错") || strings.Contains(l.Detail, "forbidden") {
+		t.Fatalf("failing loop: %+v", l)
+	}
+	m.Pass("release", nil)
+	if l := check(t, m.Check([]string{"release"}, nil), "loop release"); !l.OK {
+		t.Fatalf("after a good pass: %+v", l)
+	}
 }

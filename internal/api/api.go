@@ -154,9 +154,11 @@ func (h *handler) allocate(w http.ResponseWriter, r *http.Request, caller auth.C
 	started := time.Now()
 	result, err := h.svc.Allocate(r.Context(), req)
 	// A request that was wrong, or for a route there is not, is the
-	// caller's; anything else that failed is GameFleet's or a cluster's.
-	h.monitor.Allocation(time.Since(started),
-		err != nil && !errors.Is(err, allocate.ErrInvalid) && !errors.Is(err, allocate.ErrRouteNotFound))
+	// caller's, and is left out; anything else that failed is GameFleet's or
+	// a cluster's.
+	if !errors.Is(err, allocate.ErrInvalid) && !errors.Is(err, allocate.ErrRouteNotFound) {
+		h.monitor.Allocation(time.Since(started), err != nil)
+	}
 	if err != nil {
 		h.fail(w, err, "allocation", "caller", caller.Name, "matchId", req.MatchID)
 		return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -269,6 +270,35 @@ func TestOnlyFiveBackupsStay(t *testing.T) {
 	backups, _ := os.ReadDir(s.o.BackupDir)
 	if len(backups) != 5 {
 		t.Fatalf("%d backups kept", len(backups))
+	}
+}
+
+// The daily backups in the same directory are not the update's to prune.
+func TestUpdatesLeaveDailyBackups(t *testing.T) {
+	s, dir := newService(t, "2.0.0", "")
+	os.WriteFile(filepath.Join(dir, "status.json"), []byte(`{"state":"downloaded"}`), 0o644)
+	os.MkdirAll(s.o.BackupDir, 0o750)
+	for i := range 14 {
+		os.WriteFile(filepath.Join(s.o.BackupDir, fmt.Sprintf("gamefleet-daily-202610%02d-030000.db", i+1)), []byte("x"), 0o600)
+	}
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	for i := range 7 {
+		s.now = func() time.Time { return now.Add(time.Duration(i) * time.Hour) }
+		if err := s.Apply(context.Background(), "2.1.0"); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(filepath.Join(dir, "request.json"))
+		os.Chtimes(filepath.Join(s.o.BackupDir, "gamefleet-2.0.0-"+s.now().UTC().Format("20060102-150405")+".db"), s.now(), s.now())
+	}
+	entries, _ := os.ReadDir(s.o.BackupDir)
+	daily := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "gamefleet-daily-") {
+			daily++
+		}
+	}
+	if daily != 14 || len(entries) != 14+5 {
+		t.Fatalf("%d daily backups of 14, %d files in all", daily, len(entries))
 	}
 }
 

@@ -28,10 +28,11 @@ func (s *Service) Run(ctx context.Context) {
 	ticker := time.NewTicker(Interval)
 	defer ticker.Stop()
 	for {
-		if err := s.Reconcile(ctx); err != nil && ctx.Err() == nil {
+		err := s.Reconcile(ctx)
+		if err != nil && ctx.Err() == nil {
 			s.log.Warn("release loop", "error", err)
 		}
-		s.monitor.Pass("release")
+		s.monitor.Pass("release", err)
 		select {
 		case <-ctx.Done():
 			return

@@ -48,9 +48,15 @@ type Monitor struct {
 
 	mu       sync.Mutex
 	started  time.Time
-	passes   map[string]time.Time // loop: when its last pass got through
-	contacts map[string]contact   // cluster: when GameFleet last reached it
+	passes   map[string]pass    // by loop
+	contacts map[string]contact // cluster: when GameFleet last reached it
 	allocs   []allocation
+}
+
+// pass is when a loop last got through a pass, and last got through one
+// without an error.
+type pass struct {
+	done, ok time.Time
 }
 
 type contact struct {
@@ -67,17 +73,24 @@ type allocation struct {
 // New returns a monitor. newestBackup may be nil when there are no daily
 // backups to watch.
 func New(now func() time.Time, newestBackup func() (time.Time, error)) *Monitor {
-	return &Monitor{now: now, newestBackup: newestBackup, started: now(), passes: map[string]time.Time{}, contacts: map[string]contact{}}
+	return &Monitor{now: now, newestBackup: newestBackup, started: now(), passes: map[string]pass{}, contacts: map[string]contact{}}
 }
 
-// Pass records that a loop got through a pass.
-func (m *Monitor) Pass(loop string) {
+// Pass records that a loop got through a pass, and whether the pass had an
+// error: a loop that gets through every pass and fails in each needs a
+// person as much as one that is stuck.
+func (m *Monitor) Pass(loop string, err error) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.passes[loop] = m.now()
+	p := m.passes[loop]
+	p.done = m.now()
+	if err == nil {
+		p.ok = p.done
+	}
+	m.passes[loop] = p
 }
 
 // Contact records whether GameFleet reached the cluster.
@@ -97,7 +110,9 @@ func (m *Monitor) Contact(cluster string, err error) {
 }
 
 // Allocation records one allocation: how long it took and whether it failed
-// on GameFleet's side. Requests that were wrong count for neither.
+// on GameFleet's or a cluster's side. Callers leave out requests that were
+// wrong, or for a route there is not: those are the caller's, and counted
+// they would dilute real failures.
 func (m *Monitor) Allocation(took time.Duration, failed bool) {
 	if m == nil {
 		return
@@ -148,15 +163,21 @@ func (m *Monitor) Check(loops, clusters []string) Status {
 	now := m.now()
 	var checks []Check
 	for _, loop := range loops {
-		last, ok := m.passes[loop]
-		c := Check{Name: "loop " + loop, OK: true}
+		p, ran := m.passes[loop]
+		c := Check{Name: "loop " + loop}
 		switch {
-		case ok:
-			c.Detail = fmt.Sprintf("上一轮 %s 前跑完", age(now.Sub(last)))
-			c.OK = now.Sub(last) <= StaleLoop
-		default:
+		case !ran:
 			c.Detail = fmt.Sprintf("启动 %s 了，还没跑完一轮", age(now.Sub(m.started)))
 			c.OK = now.Sub(m.started) <= StaleLoop
+		case now.Sub(p.done) > StaleLoop:
+			c.Detail = fmt.Sprintf("上一轮 %s 前跑完，之后卡住了", age(now.Sub(p.done)))
+		case p.ok.IsZero() && now.Sub(m.started) > StaleLoop:
+			c.Detail = "每轮都跑完了，但启动以来每轮都出错，详情看 GameFleet 的日志"
+		case !p.ok.IsZero() && now.Sub(p.ok) > StaleLoop:
+			c.Detail = fmt.Sprintf("每轮都跑完了，但 %s 来每轮都出错，详情看 GameFleet 的日志", age(now.Sub(p.ok)))
+		default:
+			c.OK = true
+			c.Detail = fmt.Sprintf("上一轮 %s 前跑完", age(now.Sub(p.done)))
 		}
 		checks = append(checks, c)
 	}
@@ -201,7 +222,7 @@ func (m *Monitor) Check(loops, clusters []string) Status {
 		at, err := m.newestBackup()
 		switch {
 		case err != nil:
-			c.Detail = "读不到备份：" + err.Error()
+			c.Detail = "读不到备份目录，详情看 GameFleet 的日志"
 		case at.IsZero():
 			c.Detail = "还没有每日备份"
 		default:

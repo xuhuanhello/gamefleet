@@ -164,6 +164,8 @@ func newEnv(t *testing.T) *env {
 	console, err := New(Options{
 		Host: "fleet.example.com", Sites: dir, Clusters: fleets, Auth: a, Keys: keys,
 		Store: db, Releases: releases, Updates: updates, Monitor: monitor, Log: log,
+		// No test asks the network.
+		LookupHost: func(string) ([]string, error) { return []string{"198.51.100.1"}, nil },
 	})
 	if err != nil {
 		t.Fatal(err)

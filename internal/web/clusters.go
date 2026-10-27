@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -370,7 +369,7 @@ func (c *Console) cancelNode(w http.ResponseWriter, r *http.Request, p page) {
 // publicIP is the address GameFleet's host name points at, which is where
 // GameFleet reaches clusters from.
 func (c *Console) publicIP() string {
-	addrs, err := net.LookupHost(c.host)
+	addrs, err := c.lookupHost(c.host)
 	if err != nil || len(addrs) == 0 {
 		return ""
 	}

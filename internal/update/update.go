@@ -403,7 +403,8 @@ func (s *Service) Apply(ctx context.Context, v string) error {
 	return s.ask("apply", v, name)
 }
 
-// prune keeps the newest five backups.
+// prune keeps the newest five backups made before updates. The daily ones in
+// the same directory are store.DailyBackup's to keep.
 func (s *Service) prune() {
 	entries, err := os.ReadDir(s.o.BackupDir)
 	if err != nil {
@@ -411,7 +412,7 @@ func (s *Service) prune() {
 	}
 	var names []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "gamefleet-") && strings.HasSuffix(e.Name(), ".db") {
+		if strings.HasPrefix(e.Name(), "gamefleet-") && !strings.HasPrefix(e.Name(), "gamefleet-daily-") && strings.HasSuffix(e.Name(), ".db") {
 			names = append(names, e.Name())
 		}
 	}

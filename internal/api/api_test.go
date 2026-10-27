@@ -335,8 +335,10 @@ func TestStatusForAMonitor(t *testing.T) {
 			t.Fatalf("allocation without capacity = %d", status)
 		}
 	}
-	// A wrong request is the caller's and does not count.
-	call(t, server, http.MethodPost, "/api/v1/allocations", nakamaKey, `{"matchId":"bad id"}`)
+	// Wrong requests are the caller's: many of them hide nothing.
+	for range 100 {
+		call(t, server, http.MethodPost, "/api/v1/allocations", nakamaKey, strings.Replace(match, `"m-1"`, `"bad id"`, 1))
+	}
 	status, out = call(t, server, http.MethodGet, "/status", "", "")
 	if status != http.StatusServiceUnavailable || out["ok"] != false || !strings.Contains(fmt.Sprint(out["checks"]), "失败 5 次") {
 		t.Fatalf("status after failed allocations = %d %v", status, out)
