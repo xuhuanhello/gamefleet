@@ -27,6 +27,10 @@ type script struct {
 
 func (s *script) run(_ context.Context, t remote.Target, command string, out io.Writer) (string, error) {
 	s.mu.Lock()
+	if t.HostKey != testHostKey.Fingerprint {
+		s.mu.Unlock()
+		return "", fmt.Errorf("logged in with host key %q, not the one checked", t.HostKey)
+	}
 	s.calls = append(s.calls, t.User+"@"+t.Host+" "+command)
 	fail := s.failNext
 	s.failNext = nil
@@ -72,6 +76,22 @@ func TestInstallAClusterOverSSH(t *testing.T) {
 	j, err := f.svc.StartRemoteJoin(ctx, "sg-1", "sg", false, remote.Target{Host: "203.0.113.7", Password: "pw"}, "admin")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// GameFleet logs in only once the operator checked the host key.
+	if j.Remote.State != RemoteChecking || j.Remote.Fingerprint != "SHA256:host" || j.Remote.KeyFile != testHostKey.File || len(sc.calls) != 0 {
+		t.Fatalf("before the check: %+v, calls %v", j.Remote, sc.calls)
+	}
+	if err := f.svc.RetryJoin(j.ID); err == nil {
+		t.Fatal("ran before the host key was checked")
+	}
+	if err := f.svc.ConfirmJoin(j.ID, "SHA256:other"); err == nil {
+		t.Fatal("confirmed another host key")
+	}
+	if err := f.svc.ConfirmJoin(j.ID, "SHA256:host"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.ConfirmJoin(j.ID, "SHA256:host"); err == nil {
+		t.Fatal("confirmed twice")
 	}
 	waitFor(t, "the first run to fail", func() bool { got, _ := f.svc.JoinByID(j.ID); return got.Remote.State == RemoteFailed })
 	got, _ := f.svc.JoinByID(j.ID)
@@ -132,6 +152,18 @@ func TestAddAMachineOverSSH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if job.Stage != NodeChecking || job.Remote.Fingerprint != "SHA256:host" || len(sc.calls) != 0 {
+		t.Fatalf("before the check: %+v, calls %v", job, sc.calls)
+	}
+	if err := f.svc.RetryNode(job.ID); err == nil {
+		t.Fatal("ran before the host key was checked")
+	}
+	if err := f.svc.ConfirmNode(job.ID, "SHA256:other"); err == nil {
+		t.Fatal("confirmed another host key")
+	}
+	if err := f.svc.ConfirmNode(job.ID, "SHA256:host"); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, "the machine to appear", func() bool { got, _ := f.svc.NodeJobByID(job.ID); return got.Stage == NodeDone })
 	got, _ := f.svc.NodeJobByID(job.ID)
 	if got.Node != "vm-0-3-debian" || !strings.Contains(sc.calls[0], "install/node.sh | sh -s -- --server https://203.0.113.7:6443 --token agent-token") {
@@ -180,6 +212,9 @@ func TestAddAMachineOverSSH(t *testing.T) {
 	sc.act = nil
 	f.svc.appearWait = 50 * time.Millisecond
 	job, _ = f.svc.StartNodeJoin(ctx, "us-1", remote.Target{Host: "203.0.113.10", Password: "pw"}, "", "admin")
+	if err := f.svc.ConfirmNode(job.ID, "SHA256:host"); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, "the run to fail", func() bool { got, _ := f.svc.NodeJobByID(job.ID); return got.Stage == NodeFailed })
 	if err := f.svc.RetryNode(job.ID); err != nil {
 		t.Fatal(err)
@@ -236,9 +271,70 @@ func TestInstallStepsAndWhyItStopped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := f.svc.ConfirmJoin(r.ID, "SHA256:host"); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, "the run to stop", func() bool { got, _ := f.svc.JoinByID(r.ID); return got.Remote.State == RemoteFailed })
 	got, _ = f.svc.JoinByID(r.ID)
 	if got.Remote.Error != "Agones 的安装包装了 3 次都失败了：Error: INSTALLATION FAILED（退出码 1）" {
 		t.Fatalf("error = %q", got.Remote.Error)
+	}
+}
+
+// An operator whose machine shows another host key cancels: GameFleet drops
+// the login without having used it, and runs nothing.
+func TestCancelBeforeLoggingIn(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	sc := &script{}
+	f.svc.SetRunner(sc.run)
+	j, err := f.svc.StartRemoteJoin(ctx, "sg-1", "sg", false, remote.Target{Host: "203.0.113.7", Password: "pw"}, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.CancelJoin(j.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.svc.JoinByID(j.ID)
+	f.svc.mu.Lock()
+	kept := f.svc.joins[j.ID].target
+	f.svc.mu.Unlock()
+	if got.Remote.State != RemoteFailed || kept != nil || len(sc.calls) != 0 {
+		t.Fatalf("cancelled install: %+v, login kept %v, calls %v", got.Remote, kept != nil, sc.calls)
+	}
+	if err := f.svc.ConfirmJoin(j.ID, "SHA256:host"); err == nil {
+		t.Fatal("confirmed a cancelled install")
+	}
+
+	f.fakes["us-1"] = clustertest.New("us-1", 0)
+	if err := f.svc.Add(ctx, *connection("us-1", "us"), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	job, err := f.svc.StartNodeJoin(ctx, "us-1", remote.Target{Host: "203.0.113.9", Password: "pw"}, "", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.CancelNode(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.svc.NodeJobByID(job.ID); got.Stage != NodeFailed || len(sc.calls) != 0 {
+		t.Fatalf("cancelled join: %+v, calls %v", got, sc.calls)
+	}
+	if err := f.svc.RetryNode(job.ID); err == nil {
+		t.Fatal("retried a cancelled join")
+	}
+}
+
+// A machine whose host key cannot be read is refused before anything starts.
+func TestAMachineWithoutAHostKeyIsRefused(t *testing.T) {
+	f := newFixture(t)
+	f.svc.SetHostKeyReader(func(context.Context, string, int) (remote.HostKey, error) {
+		return remote.HostKey{}, errors.New("连不上 203.0.113.7:22")
+	})
+	if _, err := f.svc.StartRemoteJoin(context.Background(), "sg-1", "sg", false, remote.Target{Host: "203.0.113.7", Password: "pw"}, "admin"); err == nil {
+		t.Fatal("started an install on a machine whose host key could not be read")
+	}
+	if joins := len(f.svc.joins); joins != 0 {
+		t.Fatalf("%d join codes made for it", joins)
 	}
 }

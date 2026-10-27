@@ -24,6 +24,7 @@ import (
 
 	"github.com/xuhuanhello/gamefleet/internal/auth"
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
+	"github.com/xuhuanhello/gamefleet/internal/clusters"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
 	"github.com/xuhuanhello/gamefleet/internal/update"
@@ -106,6 +107,9 @@ func New(o Options) (*Console, error) {
 		"scope":        scopeLabel,
 		"has":          func(list []string, s string) bool { return slices.Contains(list, s) },
 		"until":        c.until,
+		"hostKeyCheck": func(r *clusters.Remote, action string) map[string]any {
+			return map[string]any{"Remote": r, "Action": action}
+		},
 	}
 	for _, name := range []string{"login", "message", "refused", "overview", "cluster", "node", "servers", "server", "log", "events",
 		"builds", "build", "routes", "keys", "audit", "join", "runtime", "nodejob", "addnode", "update"} {
@@ -162,9 +166,13 @@ func (c *Console) Handler() http.Handler {
 	mux.Handle("GET /clusters/new", c.signedIn(c.newCluster))
 	mux.Handle("POST /clusters/new", c.signedIn(c.startJoin))
 	mux.Handle("POST /clusters/new/{id}/retry", c.signedIn(c.retryJoin))
+	mux.Handle("POST /clusters/new/{id}/confirm", c.signedIn(c.confirmJoin))
+	mux.Handle("POST /clusters/new/{id}/cancel", c.signedIn(c.cancelJoin))
 	mux.Handle("GET /clusters/{cluster}/nodes/new", c.signedIn(c.nodeJob))
 	mux.Handle("POST /clusters/{cluster}/nodes/new", c.signedIn(c.startNodeJoin))
 	mux.Handle("POST /clusters/{cluster}/nodes/new/{id}/retry", c.signedIn(c.retryNode))
+	mux.Handle("POST /clusters/{cluster}/nodes/new/{id}/confirm", c.signedIn(c.confirmNode))
+	mux.Handle("POST /clusters/{cluster}/nodes/new/{id}/cancel", c.signedIn(c.cancelNode))
 	mux.Handle("POST /clusters/{cluster}/nodes/{node}/retire", c.signedIn(c.retireNode))
 	mux.Handle("POST /clusters/{cluster}/nodes/{node}/keep", c.signedIn(c.keepNode))
 	mux.Handle("POST /clusters/{cluster}/nodes/{node}/name", c.signedIn(c.renameNode))

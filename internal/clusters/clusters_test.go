@@ -16,6 +16,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/auth"
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
 	"github.com/xuhuanhello/gamefleet/internal/cluster/clustertest"
+	"github.com/xuhuanhello/gamefleet/internal/remote"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
 )
@@ -49,8 +50,12 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.svc = New(db, f.dir, f.keys, connect, "fleet.example.com", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	f.svc.now = func() time.Time { return f.now }
+	f.svc.SetHostKeyReader(func(context.Context, string, int) (remote.HostKey, error) { return testHostKey, nil })
 	return f
 }
+
+// testHostKey is the host key every machine in these tests shows.
+var testHostKey = remote.HostKey{Fingerprint: "SHA256:host", File: "/etc/ssh/ssh_host_ed25519_key.pub"}
 
 func connection(name, region string) *Connection {
 	ca := base64.StdEncoding.EncodeToString([]byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"))

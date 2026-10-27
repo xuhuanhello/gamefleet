@@ -19,10 +19,14 @@ type Clusters interface {
 	StartJoin(ctx context.Context, name, region string, controlPlaneOnly bool, actor string) (clusters.Join, error)
 	StartRemoteJoin(ctx context.Context, name, region string, controlPlaneOnly bool, t remote.Target, actor string) (clusters.Join, error)
 	RetryJoin(id string) error
+	ConfirmJoin(id, fingerprint string) error
+	CancelJoin(id string) error
 	JoinByID(id string) (clusters.Join, bool)
 	StartNodeJoin(ctx context.Context, cluster string, t remote.Target, title, actor string) (clusters.NodeJob, error)
 	NodeJobByID(id string) (clusters.NodeJob, bool)
 	RetryNode(id string) error
+	ConfirmNode(id, fingerprint string) error
+	CancelNode(id string) error
 	InstallCommand(j clusters.Join) string
 	Stored(ctx context.Context, name string) (store.Cluster, bool, error)
 	JoinCommand(c store.Cluster) string
@@ -108,13 +112,15 @@ func (c *Console) newCluster(w http.ResponseWriter, r *http.Request, p page) {
 		data.Command = c.clusters.InstallCommand(j)
 		data.Expired = j.Stage != clusters.StageDone && c.now().After(j.Expires)
 		labels := []string{"在新机器上运行命令", "安装 K3s", "安装 Agones", "GameFleet 连接集群", "接入完成"}
-		failed := false
+		failed, checking := false, false
 		if j.Remote != nil {
 			labels[0] = "登录机器"
 			failed = j.Remote.State == clusters.RemoteFailed
+			checking = j.Remote.State == clusters.RemoteChecking
 		}
 		data.Progress = steps(labels, slices.Index(joinStages, j.Stage), j.Stage == clusters.StageDone, failed)
-		p.Refresh = j.Stage != clusters.StageDone && !data.Expired && !failed
+		// Nothing moves while the operator checks the host key.
+		p.Refresh = j.Stage != clusters.StageDone && !data.Expired && !failed && !checking
 		p.RefreshSeconds = 3
 		if j.Step != "" && (j.Stage == clusters.StageK3s || j.Stage == clusters.StageAgones) {
 			since := ""
@@ -173,6 +179,18 @@ func (c *Console) startJoin(w http.ResponseWriter, r *http.Request, p page) {
 func (c *Console) retryJoin(w http.ResponseWriter, r *http.Request, p page) {
 	id := r.PathValue("id")
 	c.act(w, r, p, "/clusters/new?join="+id, func(context.Context, formValues) error { return c.clusters.RetryJoin(id) })
+}
+
+func (c *Console) confirmJoin(w http.ResponseWriter, r *http.Request, p page) {
+	id := r.PathValue("id")
+	c.act(w, r, p, "/clusters/new?join="+id, func(_ context.Context, f formValues) error {
+		return c.clusters.ConfirmJoin(id, f.text("fingerprint"))
+	})
+}
+
+func (c *Console) cancelJoin(w http.ResponseWriter, r *http.Request, p page) {
+	id := r.PathValue("id")
+	c.act(w, r, p, "/clusters/new?join="+id, func(context.Context, formValues) error { return c.clusters.CancelJoin(id) })
 }
 
 // --- New machines
@@ -275,6 +293,20 @@ func (c *Console) retryNode(w http.ResponseWriter, r *http.Request, p page) {
 	cluster, id := r.PathValue("cluster"), r.PathValue("id")
 	c.act(w, r, p, "/clusters/"+cluster+"/nodes/new?job="+id, func(context.Context, formValues) error {
 		return c.clusters.RetryNode(id)
+	})
+}
+
+func (c *Console) confirmNode(w http.ResponseWriter, r *http.Request, p page) {
+	cluster, id := r.PathValue("cluster"), r.PathValue("id")
+	c.act(w, r, p, "/clusters/"+cluster+"/nodes/new?job="+id, func(_ context.Context, f formValues) error {
+		return c.clusters.ConfirmNode(id, f.text("fingerprint"))
+	})
+}
+
+func (c *Console) cancelNode(w http.ResponseWriter, r *http.Request, p page) {
+	cluster, id := r.PathValue("cluster"), r.PathValue("id")
+	c.act(w, r, p, "/clusters/"+cluster+"/nodes/new?job="+id, func(context.Context, formValues) error {
+		return c.clusters.CancelNode(id)
 	})
 }
 

@@ -155,3 +155,23 @@
 </table>
 </div>
 {{end}}
+
+{{/* hostKeyCheck shows a machine's host key for the operator to check on the
+   machine before GameFleet logs in. Its data: Remote, and Action, the job's
+   path. */}}
+{{define "hostKeyCheck"}}
+<div class="panel">
+  <div class="panel-head"><h2>先核对主机指纹</h2></div>
+  <div class="panel-body">
+    <p>GameFleet 连上了 <span class="mono">{{.Remote.Host}}</span>，读到了它的 SSH 主机指纹。<strong>GameFleet 还没有登录，密码和私钥都还没发出去。</strong></p>
+    <p><span class="mono" data-copy="{{.Remote.Fingerprint}}">{{.Remote.Fingerprint}}</span></p>
+    <p>在云服务商控制台里用网页终端登录这台机器，执行：</p>
+    <pre class="command"><code data-copy="ssh-keygen -lf {{.Remote.KeyFile}}">ssh-keygen -lf {{.Remote.KeyFile}}</code></pre>
+    <p>输出里 <span class="mono">SHA256:</span> 开头的那一段和上面一样，再点"指纹一致，开始安装"。不一样就取消：你可能连到了别的机器，GameFleet 不会把密码发给它。</p>
+    <div class="actions">
+      <form action="{{.Action}}/confirm" method="post"><input type="hidden" name="fingerprint" value="{{.Remote.Fingerprint}}"><button type="submit" class="primary">指纹一致，开始安装</button></form>
+      <form action="{{.Action}}/cancel" method="post"><button type="submit">不一致，取消</button></form>
+    </div>
+  </div>
+</div>
+{{end}}

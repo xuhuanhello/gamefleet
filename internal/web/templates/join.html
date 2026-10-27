@@ -47,6 +47,8 @@
 {{- else if $d.Expired}}
 <p class="finding bad"><span class="dot"></span><span class="text">加入码已经过期，登录信息也丢掉了。回到接入集群页重新填一次；那台机器上已经装好的部分会接着用。</span></p>
 <div class="actions"><a class="button primary" href="/clusters/new">重新开始</a></div>
+{{- else if and $j.Remote (eq $j.Remote.State "checking")}}
+{{template "hostKeyCheck" (hostKeyCheck $j.Remote (print "/clusters/new/" $j.ID))}}
 {{- else if and $j.Remote (eq $j.Remote.State "failed")}}
 <p class="finding bad"><span class="dot"></span><span class="text">{{$j.Remote.Error}}</span></p>
 <form class="actions" action="/clusters/new/{{$j.ID}}/retry" method="post"><button type="submit" class="primary">重试</button><span class="muted">用刚才的登录信息再跑一次，已经装好的部分会接着用。</span></form>

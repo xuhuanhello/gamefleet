@@ -19,8 +19,18 @@ type Runner func(ctx context.Context, t remote.Target, command string, out io.Wr
 // SetRunner replaces the SSH runner; tests use it.
 func (s *Service) SetRunner(r Runner) { s.run = r }
 
+// HostKeyReader reads a machine's SSH host key without logging in;
+// remote.ReadHostKey is the real one.
+type HostKeyReader func(ctx context.Context, host string, port int) (remote.HostKey, error)
+
+// SetHostKeyReader replaces the host key reader; tests use it.
+func (s *Service) SetHostKeyReader(r HostKeyReader) { s.readHostKey = r }
+
 // States of a run over SSH.
 const (
+	// RemoteChecking waits for the operator to check the machine's host key
+	// on the machine; GameFleet has not logged in.
+	RemoteChecking   = "checking"
 	RemoteConnecting = "connecting"
 	RemoteRunning    = "running"
 	RemoteFailed     = "failed"
@@ -40,6 +50,7 @@ type Remote struct {
 	User        string
 	State       string
 	Fingerprint string // of the machine's SSH host key
+	KeyFile     string // where the machine keeps that key, for the operator to check it
 	Error       string
 	Log         []string // the last lines the command printed
 	Started     time.Time
@@ -136,13 +147,52 @@ func checkTarget(t remote.Target) (remote.Target, error) {
 	return t, nil
 }
 
+// checking reads the machine's host key, without logging in, and returns the
+// run that waits for the operator to check it on the machine.
+func (s *Service) checking(ctx context.Context, t remote.Target) (*Remote, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	key, err := s.readHostKey(ctx, t.Host, t.Port)
+	if err != nil {
+		return nil, refuse("%s", err.Error())
+	}
+	return &Remote{Host: t.Host, User: t.User, State: RemoteChecking, Fingerprint: key.Fingerprint, KeyFile: key.File}, nil
+}
+
+// checked records that the operator checked the host key on the machine, and
+// pins the login to it. fingerprint is the one the operator was shown. The
+// caller holds the lock.
+func checked(r *Remote, t *remote.Target, fingerprint string) error {
+	switch {
+	case r.State != RemoteChecking:
+		return refuse("这次安装已经核对过主机指纹了")
+	case fingerprint != r.Fingerprint:
+		return refuse("核对的指纹和 GameFleet 读到的不一样，请刷新页面重新核对")
+	}
+	t.HostKey = r.Fingerprint
+	r.State = RemoteConnecting
+	return nil
+}
+
+// cancelled drops the login of a run the operator would not let start. The
+// caller holds the lock.
+func cancelled(r *Remote) {
+	r.State, r.Error = RemoteFailed, "取消了：GameFleet 没有登录这台机器，登录信息已经丢掉"
+}
+
 // --- New clusters over SSH
 
-// StartRemoteJoin makes a join code and has GameFleet run the install
-// command on the machine itself. The login stays in memory until the cluster
-// has joined or the code expires, so a failed run can be retried.
+// StartRemoteJoin makes a join code for GameFleet to run the install command
+// on the machine itself. It reads the machine's host key and waits for the
+// operator to check it on the machine (ConfirmJoin) before it logs in. The
+// login stays in memory until the cluster has joined or the code expires, so
+// a failed run can be retried.
 func (s *Service) StartRemoteJoin(ctx context.Context, name, region string, controlPlaneOnly bool, t remote.Target, actor string) (Join, error) {
 	t, err := checkTarget(t)
+	if err != nil {
+		return Join{}, err
+	}
+	r, err := s.checking(ctx, t)
 	if err != nil {
 		return Join{}, err
 	}
@@ -153,11 +203,45 @@ func (s *Service) StartRemoteJoin(ctx context.Context, name, region string, cont
 	s.mu.Lock()
 	stored := s.joins[j.ID]
 	stored.target = &t
-	stored.Remote = &Remote{Host: t.Host, User: t.User, State: RemoteConnecting}
+	stored.Remote = r
 	j = stored.snapshot()
 	s.mu.Unlock()
-	go s.runJoin(j.ID)
 	return j, nil
+}
+
+// ConfirmJoin starts the install once the operator found the machine's host
+// key to be fingerprint, the one GameFleet showed.
+func (s *Service) ConfirmJoin(id, fingerprint string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.joins[id]
+	switch {
+	case !ok || j.Remote == nil:
+		return refuse("没有这次安装")
+	case j.target == nil || s.now().After(j.Expires):
+		return refuse("登录信息已经丢了（加入码过期或 GameFleet 重启过），请重新填一次")
+	}
+	if err := checked(j.Remote, j.target, fingerprint); err != nil {
+		return err
+	}
+	go s.runJoin(id)
+	return nil
+}
+
+// CancelJoin drops the login of an install the operator would not let start.
+func (s *Service) CancelJoin(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.joins[id]
+	if !ok || j.Remote == nil {
+		return refuse("没有这次安装")
+	}
+	if j.Remote.State != RemoteChecking {
+		return refuse("安装已经开始了，不能取消")
+	}
+	j.target = nil
+	cancelled(j.Remote)
+	return nil
 }
 
 // RetryJoin runs the install again with the login given before.
@@ -171,6 +255,9 @@ func (s *Service) RetryJoin(id string) error {
 	case j.target == nil || s.now().After(j.Expires):
 		s.mu.Unlock()
 		return refuse("登录信息已经丢了（加入码过期或 GameFleet 重启过），请重新填一次")
+	case j.Remote.State == RemoteChecking:
+		s.mu.Unlock()
+		return refuse("先核对这台机器的主机指纹")
 	case j.Remote.Busy():
 		s.mu.Unlock()
 		return nil
@@ -213,6 +300,7 @@ func orDash(s string) string {
 
 // Stages of a machine joining a cluster.
 const (
+	NodeChecking   = "checking"   // the operator checks its host key; GameFleet has not logged in
 	NodeInstalling = "installing" // GameFleet runs node.sh on it
 	NodeAppearing  = "appearing"  // waiting for it to show up in the cluster
 	NodeDone       = "done"
@@ -268,16 +356,56 @@ func (s *Service) StartNodeJoin(ctx context.Context, clusterName string, t remot
 			}
 		}
 	}
+	r, err := s.checking(ctx, t)
+	if err != nil {
+		return NodeJob{}, err
+	}
 	now := s.now()
-	job := &NodeJob{ID: random(10), Cluster: clusterName, Stage: NodeInstalling, Title: title, Expires: now.Add(JoinCodeTTL), By: actor,
-		Remote: &Remote{Host: t.Host, User: t.User, State: RemoteConnecting}, target: &t}
+	job := &NodeJob{ID: random(10), Cluster: clusterName, Stage: NodeChecking, Title: title, Expires: now.Add(JoinCodeTTL), By: actor,
+		Remote: r, target: &t}
 	s.mu.Lock()
 	s.forget(now)
 	s.nodes[job.ID] = job
 	snapshot := job.snapshot()
 	s.mu.Unlock()
-	go s.runNode(job.ID)
 	return snapshot, nil
+}
+
+// ConfirmNode starts the join once the operator found the machine's host key
+// to be fingerprint, the one GameFleet showed.
+func (s *Service) ConfirmNode(id, fingerprint string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.nodes[id]
+	switch {
+	case !ok:
+		return refuse("没有这次加入")
+	case n.target == nil || s.now().After(n.Expires):
+		return refuse("登录信息已经丢了（超过一小时或 GameFleet 重启过），请重新填一次")
+	}
+	if err := checked(n.Remote, n.target, fingerprint); err != nil {
+		return err
+	}
+	n.Stage = NodeInstalling
+	go s.runNode(id)
+	return nil
+}
+
+// CancelNode drops the login of a join the operator would not let start.
+func (s *Service) CancelNode(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.nodes[id]
+	if !ok {
+		return refuse("没有这次加入")
+	}
+	if n.Stage != NodeChecking {
+		return refuse("加入已经开始了，不能取消")
+	}
+	n.target = nil
+	cancelled(n.Remote)
+	n.Stage, n.Message = NodeFailed, n.Remote.Error
+	return nil
 }
 
 // NodeJobByID returns a machine's join for the console.
@@ -302,6 +430,9 @@ func (s *Service) RetryNode(id string) error {
 	case n.target == nil || s.now().After(n.Expires):
 		s.mu.Unlock()
 		return refuse("登录信息已经丢了（超过一小时或 GameFleet 重启过），请重新填一次")
+	case n.Stage == NodeChecking:
+		s.mu.Unlock()
+		return refuse("先核对这台机器的主机指纹")
 	case n.Remote.Busy() || n.Stage == NodeAppearing || n.Stage == NodeDone:
 		s.mu.Unlock()
 		return nil

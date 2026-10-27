@@ -165,6 +165,16 @@ func TestInstallAClusterOverSSHFromTheConsole(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("start: %d", resp.StatusCode)
 	}
+	// First the operator checks the host key on the machine; GameFleet has
+	// not logged in.
+	_, body = e.get(t, where)
+	contains(t, visible(body), "先核对主机指纹", "还没有登录，密码和私钥都还没发出去", "SHA256:abcdef",
+		"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub", "指纹一致，开始安装", "不一致，取消")
+	if strings.Contains(body, "data-refresh") || strings.Contains(body, "s3cret-root-password") {
+		t.Fatal("the checking page refreshes or shows the password")
+	}
+	id := where[strings.Index(where, "join=")+len("join="):]
+	e.expectRedirect(t, "/clusters/new/"+id+"/confirm", url.Values{"fingerprint": {"SHA256:abcdef"}}, where)
 	waitFor(t, func() bool { _, body := e.get(t, where); return strings.Contains(body, "上安装集群 sg-1") })
 	_, body = e.get(t, where)
 	page := visible(body)
@@ -220,6 +230,14 @@ func TestAddAMachineOverSSHFromTheConsole(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther || !strings.HasPrefix(where, "/clusters/eu-1/nodes/new?job=") {
 		t.Fatalf("start: %d %s", resp.StatusCode, where)
 	}
+	_, body = e.get(t, where)
+	contains(t, visible(body), "先核对主机指纹", "SHA256:abcdef", "指纹一致，开始安装")
+	id := where[strings.Index(where, "job=")+len("job="):]
+	// A fingerprint other than the one shown is refused.
+	if resp, _ := e.post(t, "/clusters/eu-1/nodes/new/"+id+"/confirm", url.Values{"fingerprint": {"SHA256:other"}}); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("confirming another fingerprint: %d", resp.StatusCode)
+	}
+	e.expectRedirect(t, "/clusters/eu-1/nodes/new/"+id+"/confirm", url.Values{"fingerprint": {"SHA256:abcdef"}}, where)
 	waitFor(t, func() bool { _, body := e.get(t, where); return strings.Contains(body, "vm-1 已经加入 eu-1") })
 	_, body = e.get(t, where)
 	if !strings.Contains(body, `<progress max="4" value="4">`) || strings.Contains(body, "pw-of-the-vm") || !strings.Contains(visible(body), "SHA256:xyz") {
@@ -261,4 +279,22 @@ func TestJoinAControlPlaneOnlyCluster(t *testing.T) {
 		t.Fatalf("bad cluster name: %d", resp.StatusCode)
 	}
 	contains(t, body, `value="1" checked`)
+}
+
+// An operator whose machine shows another host key cancels from the page,
+// and the login is gone.
+func TestCancelAJoinFromTheChecklist(t *testing.T) {
+	e := newEnv(t)
+	e.signIn(t)
+	ran := false
+	e.clusters.SetRunner(func(context.Context, remote.Target, string, io.Writer) (string, error) { ran = true; return "", nil })
+	resp, _ := e.post(t, "/clusters/new", url.Values{"name": {"sg-1"}, "region": {"sg"}, "host": {"203.0.113.7"}, "password": {"pw"}})
+	where := resp.Header.Get("Location")
+	id := where[strings.Index(where, "join=")+len("join="):]
+	e.expectRedirect(t, "/clusters/new/"+id+"/cancel", url.Values{}, where)
+	_, body := e.get(t, where)
+	contains(t, visible(body), "取消了：GameFleet 没有登录这台机器，登录信息已经丢掉")
+	if ran {
+		t.Fatal("a cancelled install ran")
+	}
 }

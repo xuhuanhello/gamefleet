@@ -1,6 +1,10 @@
 // Package remote runs one install command on a machine over SSH, for the
 // console's "let GameFleet install it" path. The password or private key is
 // used for that run only: callers keep it in memory and drop it afterwards.
+//
+// A fresh machine has no way to vouch for itself, so GameFleet first reads its
+// host key without logging in (ReadHostKey), the operator checks it on the
+// machine, and Run logs in only to the machine with that key.
 package remote
 
 import (
@@ -27,6 +31,67 @@ type Target struct {
 	Key      string // a private key in PEM or OpenSSH format
 	// Passphrase unlocks Key when it is encrypted.
 	Passphrase string
+	// HostKey is the fingerprint, SHA256:…, of the host key the operator
+	// checked on the machine. Run logs in to no machine with another one.
+	HostKey string
+}
+
+// HostKey is a machine's SSH host key, the way an operator checks it on the
+// machine: ssh-keygen -lf File prints Fingerprint.
+type HostKey struct {
+	Fingerprint string
+	File        string
+}
+
+// hostKeyAlgorithms is the order GameFleet takes a machine's host key types
+// in, the same when it reads the key and when it logs in, so that both see
+// the same key.
+var hostKeyAlgorithms = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
+	ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+
+// keyFile is where OpenSSH keeps a host key of the type.
+func keyFile(keyType string) string {
+	kind := "rsa"
+	switch {
+	case keyType == ssh.KeyAlgoED25519:
+		kind = "ed25519"
+	case strings.HasPrefix(keyType, "ecdsa-"):
+		kind = "ecdsa"
+	}
+	return "/etc/ssh/ssh_host_" + kind + "_key.pub"
+}
+
+// errGotKey stops a connection once it has the machine's host key.
+var errGotKey = errors.New("got the host key")
+
+// ReadHostKey connects to the machine and reads its host key. It does not log
+// in: the connection ends at the key, before any login is sent.
+func ReadHostKey(ctx context.Context, host string, port int) (HostKey, error) {
+	var got ssh.PublicKey
+	config := &ssh.ClientConfig{
+		User:              "gamefleet",
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			got = key
+			return errGotKey
+		},
+		Timeout: 15 * time.Second,
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	dialer := net.Dialer{Timeout: 15 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return HostKey{}, fail("连不上 %s：%v。确认机器开着，云防火墙放行了 SSH 端口 %d", addr, err, port)
+	}
+	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+	_, _, _, err = ssh.NewClientConn(conn, addr, config)
+	if got == nil {
+		return HostKey{}, fail("读不到 %s 的主机指纹：%v", addr, err)
+	}
+	return HostKey{Fingerprint: ssh.FingerprintSHA256(got), File: keyFile(got.Type())}, nil
 }
 
 // Error is a problem written for the operator. Status is the command's exit
@@ -102,21 +167,32 @@ func (t Target) auth() ([]ssh.AuthMethod, error) {
 	return methods, nil
 }
 
-// Run logs in, runs command as root (through sudo when the user is not
-// root), and writes everything it prints to out, line by line. It returns
-// the fingerprint of the machine's host key, which a fresh machine has no
-// way to vouch for in advance: the caller shows it to the operator.
+// Run logs in to the machine whose host key is t.HostKey, runs command as
+// root (through sudo when the user is not root), and writes everything it
+// prints to out, line by line. It returns the fingerprint of the host key
+// the machine showed.
 func Run(ctx context.Context, t Target, command string, out io.Writer) (fingerprint string, err error) {
 	t, err = t.Check()
 	if err != nil {
 		return "", err
 	}
+	if t.HostKey == "" {
+		return "", fail("还没有核对过 %s 的主机指纹", t.Host)
+	}
 	methods, _ := t.auth()
+	mismatch := false
 	config := &ssh.ClientConfig{
-		User: t.User,
-		Auth: methods,
+		User:              t.User,
+		Auth:              methods,
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		// The key is checked before any login is sent: a machine with
+		// another key gets neither password nor private key.
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			fingerprint = ssh.FingerprintSHA256(key)
+			if fingerprint != t.HostKey {
+				mismatch = true
+				return errors.New("host key mismatch")
+			}
 			return nil
 		},
 		Timeout: 15 * time.Second,
@@ -130,6 +206,9 @@ func Run(ctx context.Context, t Target, command string, out io.Writer) (fingerpr
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
 	if err != nil {
 		conn.Close()
+		if mismatch {
+			return fingerprint, fail("%s 的主机指纹现在是 %s，和核对过的 %s 不一样，可能连到了别的机器。GameFleet 没有发送密码或私钥。这台机器重装过的话，请重新填一次、重新核对", addr, fingerprint, t.HostKey)
+		}
 		if strings.Contains(err.Error(), "unable to authenticate") {
 			return fingerprint, fail("登录 %s@%s 被拒绝：密码或私钥不对", t.User, t.Host)
 		}

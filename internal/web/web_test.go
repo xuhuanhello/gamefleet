@@ -26,6 +26,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/config"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/release"
+	"github.com/xuhuanhello/gamefleet/internal/remote"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
 )
@@ -151,6 +152,9 @@ func newEnv(t *testing.T) *env {
 		return joined[c.Name], nil
 	}
 	fleets := clusters.New(db, dir, keys, connect, "fleet.example.com", log)
+	fleets.SetHostKeyReader(func(context.Context, string, int) (remote.HostKey, error) {
+		return remote.HostKey{Fingerprint: "SHA256:abcdef", File: "/etc/ssh/ssh_host_ed25519_key.pub"}, nil
+	})
 	releases := release.New(db, testImages, "fleet.example.com", dir, 24*time.Hour, log)
 	updates := &fakeUpdates{current: "2.0.0", updater: true}
 	console, err := New(Options{

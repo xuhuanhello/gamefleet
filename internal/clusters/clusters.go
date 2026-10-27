@@ -64,8 +64,9 @@ type Service struct {
 	now     func() time.Time
 	kick    chan struct{}
 
-	run        Runner
-	appearWait time.Duration
+	run         Runner
+	readHostKey HostKeyReader
+	appearWait  time.Duration
 
 	// retiring is held by a pass that works on retiring machines, and by
 	// Keep: the loop never removes a machine that Keep just said it kept.
@@ -79,7 +80,8 @@ type Service struct {
 // New returns the service. Connect is usually ConnectClient.
 func New(s *store.Store, dir *sites.Directory, keys *auth.Keys, connect Connect, host string, log *slog.Logger) *Service {
 	return &Service{store: s, sites: dir, keys: keys, connect: connect, host: host, log: log, now: time.Now,
-		kick: make(chan struct{}, 1), run: remote.Run, appearWait: appearWait, joins: map[string]*Join{}, nodes: map[string]*NodeJob{}}
+		kick: make(chan struct{}, 1), run: remote.Run, readHostKey: remote.ReadHostKey, appearWait: appearWait,
+		joins: map[string]*Join{}, nodes: map[string]*NodeJob{}}
 }
 
 // ConnectClient opens a real cluster.
