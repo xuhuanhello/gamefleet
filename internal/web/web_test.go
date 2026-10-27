@@ -99,9 +99,9 @@ func newEnv(t *testing.T) *env {
 	now := time.Now()
 	fake.SetView(clustertest.View{
 		Nodes: []cluster.Node{
-			{Name: manager, Ready: true, Roles: []string{"control-plane"}, InternalIP: "10.4.0.4",
+			{Name: manager, Ready: true, Roles: []string{"control-plane"}, InternalIP: "10.0.0.4",
 				Allocatable: cluster.Resources{MilliCPU: 2000, Memory: 4 << 30}, Taints: []string{"CriticalAddonsOnly=true:NoExecute"}},
-			{Name: worker, Ready: true, InternalIP: "10.4.0.3", ExternalIP: "203.0.113.20",
+			{Name: worker, Ready: true, InternalIP: "10.0.0.3", ExternalIP: "203.0.113.20",
 				Allocatable: cluster.Resources{MilliCPU: 2000, Memory: 2 << 30}, Created: now.Add(-6 * 24 * time.Hour)},
 		},
 		Pods: []cluster.Pod{
@@ -558,7 +558,7 @@ func TestRenameAMachine(t *testing.T) {
 	contains(t, page, "美西 1 号机 正常", "节点名 "+worker, `只在控制台里显示`)
 	contains(t, body, `class="leaf active" title="`+worker+`"><span>美西 1 号机</span>`, `value="美西 1 号机"`)
 	_, body = e.get(t, "/clusters/us-1")
-	contains(t, visible(body), "美西 1 号机 "+worker+" · 10.4.0.3")
+	contains(t, visible(body), "美西 1 号机 "+worker+" · 10.0.0.3")
 	_, body = e.get(t, "/servers")
 	contains(t, body, `href="/clusters/us-1/nodes/`+worker+`">美西 1 号机</a>`)
 	_, body = e.get(t, "/settings/audit")

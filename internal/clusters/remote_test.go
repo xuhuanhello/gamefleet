@@ -139,7 +139,7 @@ func TestAddAMachineOverSSH(t *testing.T) {
 	f.svc.SetRunner(sc.run)
 	sc.act = func(string) {
 		view := us.View()
-		view.Nodes = append(view.Nodes, cluster.Node{Name: "vm-0-3-debian", InternalIP: "10.0.0.3", ExternalIP: "203.0.113.9"})
+		view.Nodes = append(view.Nodes, cluster.Node{Name: "node-1", InternalIP: "10.0.0.3", ExternalIP: "203.0.113.9"})
 		us.SetView(view)
 	}
 	if _, err := f.svc.StartNodeJoin(ctx, "us-1", remote.Target{Host: "10.0.0.4", Password: "pw"}, "", "admin"); err == nil {
@@ -166,28 +166,28 @@ func TestAddAMachineOverSSH(t *testing.T) {
 	}
 	waitFor(t, "the machine to appear", func() bool { got, _ := f.svc.NodeJobByID(job.ID); return got.Stage == NodeDone })
 	got, _ := f.svc.NodeJobByID(job.ID)
-	if got.Node != "vm-0-3-debian" || !strings.Contains(sc.calls[0], "install/node.sh | sh -s -- --server https://203.0.113.7:6443 --token agent-token") {
+	if got.Node != "node-1" || !strings.Contains(sc.calls[0], "install/node.sh | sh -s -- --server https://203.0.113.7:6443 --token agent-token") {
 		t.Fatalf("job = %+v, calls %v", got, sc.calls)
 	}
 	title := func() string {
 		nodes, _ := us.Nodes(ctx)
-		return nodes[slices.IndexFunc(nodes, func(n cluster.Node) bool { return n.Name == "vm-0-3-debian" })].Title()
+		return nodes[slices.IndexFunc(nodes, func(n cluster.Node) bool { return n.Name == "node-1" })].Title()
 	}
 	// It gets the name it was added with; the name can change, and go back
 	// to the node's own name.
 	if title() != "美西 2 号机" {
 		t.Errorf("new machine is called %q", title())
 	}
-	if err := f.svc.Rename(ctx, "us-1", "vm-0-3-debian", "us worker", "admin"); err != nil || title() != "us worker" {
+	if err := f.svc.Rename(ctx, "us-1", "node-1", "us worker", "admin"); err != nil || title() != "us worker" {
 		t.Errorf("rename: %v, called %q", err, title())
 	}
-	if err := f.svc.Rename(ctx, "us-1", "vm-0-3-debian", strings.Repeat("长", 41), "admin"); err == nil {
+	if err := f.svc.Rename(ctx, "us-1", "node-1", strings.Repeat("长", 41), "admin"); err == nil {
 		t.Error("a 41-character name was accepted")
 	}
 	if err := f.svc.Rename(ctx, "us-1", "no-such-node", "x", "admin"); err == nil {
 		t.Error("renamed a machine that is not there")
 	}
-	if err := f.svc.Rename(ctx, "us-1", "vm-0-3-debian", "  ", "admin"); err != nil || title() != "vm-0-3-debian" {
+	if err := f.svc.Rename(ctx, "us-1", "node-1", "  ", "admin"); err != nil || title() != "node-1" {
 		t.Errorf("clearing the name: %v, called %q", err, title())
 	}
 	var log []store.Entry

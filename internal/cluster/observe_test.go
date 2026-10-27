@@ -37,7 +37,7 @@ func TestNodes(t *testing.T) {
 			{"metadata":{"name":"worker","labels":{"gamefleet.io/pool":"game"}},
 			 "spec":{"unschedulable":true},
 			 "status":{"allocatable":{"cpu":"2","memory":"1941796Ki"},
-			  "addresses":[{"type":"InternalIP","address":"10.4.0.3"},{"type":"ExternalIP","address":"203.0.113.20"}],
+			  "addresses":[{"type":"InternalIP","address":"10.0.0.3"},{"type":"ExternalIP","address":"203.0.113.20"}],
 			  "conditions":[{"type":"MemoryPressure","status":"True"},{"type":"Ready","status":"False"}],
 			  "nodeInfo":{"kubeletVersion":"v1.35.8+k3s1","osImage":"Debian GNU/Linux 13 (trixie)"}}},
 			{"metadata":{"name":"manager","labels":{"node-role.kubernetes.io/control-plane":"true","node-role.kubernetes.io/master":"true"}},
@@ -58,7 +58,7 @@ func TestNodes(t *testing.T) {
 		manager.Allocatable != (Resources{MilliCPU: 1950, Memory: 3 << 30}) {
 		t.Errorf("manager = %+v", manager)
 	}
-	if worker.Ready || !worker.Unschedulable || worker.InternalIP != "10.4.0.3" || worker.ExternalIP != "203.0.113.20" ||
+	if worker.Ready || !worker.Unschedulable || worker.InternalIP != "10.0.0.3" || worker.ExternalIP != "203.0.113.20" ||
 		!reflect.DeepEqual(worker.Pressure, []string{"MemoryPressure"}) || worker.Allocatable.MilliCPU != 2000 ||
 		worker.Kubelet != "v1.35.8+k3s1" {
 		t.Errorf("worker = %+v", worker)

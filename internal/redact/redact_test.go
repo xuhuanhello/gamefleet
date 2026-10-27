@@ -23,9 +23,9 @@ func TestLineHidesSecretsAndPeople(t *testing.T) {
 		"a named value":   {"login password=hunter22 user=u-1", "login password=[hidden] user=u-1"},
 		"a JSON value":    {`{"ticket":"t-abc.def","matchId":"m-1"}`, `{"ticket":"[hidden]","matchId":"m-1"}`},
 		"a query value":   {"GET /join?token=abc123&room=r-1", "GET /join?token=[hidden]&room=r-1"},
-		"a flag":          {"k3s agent --token K10abc::server:x --server https://10.4.0.4:6443", "k3s agent --token [hidden] --server https://10.4.0.4:6443"},
+		"a flag":          {"k3s agent --token K10abc::server:x --server https://10.0.0.4:6443", "k3s agent --token [hidden] --server https://10.0.0.4:6443"},
 		"private addresses stay": {
-			"dial 10.4.0.2:5432 and 127.0.0.1 and 172.20.1.3 and 100.64.0.9", "dial 10.4.0.2:5432 and 127.0.0.1 and 172.20.1.3 and 100.64.0.9"},
+			"dial 10.0.0.2:5432 and 127.0.0.1 and 172.20.1.3 and 100.64.0.9", "dial 10.0.0.2:5432 and 127.0.0.1 and 172.20.1.3 and 100.64.0.9"},
 		"times and versions stay": {"at 12:34:56 on k3s v1.35.8", "at 12:34:56 on k3s v1.35.8"},
 		"player IDs stay": {
 			"player 4ef51ac5-ae18-4ec3-83b7-9d64a95b2ac1 seat 0", "player 4ef51ac5-ae18-4ec3-83b7-9d64a95b2ac1 seat 0"},

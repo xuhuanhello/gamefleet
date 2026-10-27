@@ -109,8 +109,8 @@ func main() {
 }
 
 const (
-	manager = "vm-0-4-debian"
-	worker  = "vm-0-3-debian"
+	manager = "ctrl-1"
+	worker  = "node-1"
 	compat  = "dm-v7-closed-frame-v3-cached-0"
 	matchID = "1208c143-4262-41c5-9640-c628f9ca689a"
 	// A match that started on the previous build and is still running.
@@ -154,8 +154,8 @@ func history(db *store.Store, releases *release.Service, keys *auth.Keys, fake *
 	at := start.Add(-72 * time.Hour)
 	db.SetClock(func() time.Time { return at })
 	ca := base64.StdEncoding.EncodeToString([]byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"))
-	if err := fleets.Add(ctx, clusters.Connection{Name: "us-1", Region: "us", Server: "https://10.4.0.4:6443", CABase64: ca,
-		Token: "preview", Namespace: clusters.Namespace, JoinURL: "https://10.4.0.4:6443",
+	if err := fleets.Add(ctx, clusters.Connection{Name: "us-1", Region: "us", Server: "https://10.0.0.4:6443", CABase64: ca,
+		Token: "preview", Namespace: clusters.Namespace, JoinURL: "https://10.0.0.4:6443",
 		JoinToken: "preview-join-token-not-real"}, "gamefleet cluster"); err != nil {
 		return err
 	}
@@ -274,14 +274,14 @@ func fakeCluster(now time.Time) *clustertest.Fake {
 	}
 	fake.SetView(clustertest.View{
 		Nodes: []cluster.Node{
-			{Name: manager, Ready: true, Roles: []string{"control-plane", "master"}, InternalIP: "10.4.0.4",
+			{Name: manager, Ready: true, Roles: []string{"control-plane", "master"}, InternalIP: "10.0.0.4",
 				Kubelet: "v1.35.8+k3s1", OS: "Debian GNU/Linux 13 (trixie)", Capacity: cluster.Resources{MilliCPU: 2000, Memory: 3900 << 20},
 				Allocatable: cluster.Resources{MilliCPU: 2000, Memory: 3800 << 20},
-				Given:       "us-west-ctrl", Created: ago(6*day + 15*time.Hour)},
-			{Name: worker, Ready: true, InternalIP: "10.4.0.3", ExternalIP: "203.0.113.20",
+				Given:       "us-ctrl", Created: ago(6*day + 15*time.Hour)},
+			{Name: worker, Ready: true, InternalIP: "10.0.0.3", ExternalIP: "203.0.113.20",
 				Kubelet: "v1.35.8+k3s1", OS: "Debian GNU/Linux 13 (trixie)", Capacity: cluster.Resources{MilliCPU: 2000, Memory: 1990 << 20},
 				Allocatable: cluster.Resources{MilliCPU: 2000, Memory: 1940 << 20},
-				Given:       "us-worker-1", Created: ago(6*day + 15*time.Hour)},
+				Given:       "us-node-1", Created: ago(6*day + 15*time.Hour)},
 		},
 		Pods: []cluster.Pod{
 			system("agones-system", "agones-controller-9c49bcbdc-c4vwx", "ReplicaSet", 0, 0),
