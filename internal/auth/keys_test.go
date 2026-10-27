@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/xuhuanhello/gamefleet/internal/store"
 )
@@ -20,7 +22,7 @@ func TestKeysByValueAndByHash(t *testing.T) {
 	keys := NewKeys(db)
 	ctx := context.Background()
 
-	value, err := keys.Create(ctx, "ci", []string{ScopePush, ScopePull, ScopePush}, "admin")
+	value, err := keys.Create(ctx, "ci", []string{ScopePush, ScopePull, ScopePush}, time.Time{}, "admin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,5 +58,50 @@ func TestKeysByValueAndByHash(t *testing.T) {
 	}
 	if _, ok := keys.Check(ctx, ""); ok {
 		t.Fatal("empty key accepted")
+	}
+}
+
+// A key made to expire works until then, and the keys list says when each
+// key was last used.
+func TestKeysExpireAndTellWhenUsed(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "gamefleet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	db.SetClock(func() time.Time { return now })
+	keys := NewKeys(db)
+	ctx := context.Background()
+
+	if _, err := keys.Create(ctx, "past", []string{ScopeLogs}, now.Add(-time.Minute), "admin"); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("a key that expired already: %v", err)
+	}
+	value, err := keys.Create(ctx, "agent", []string{ScopeLogs}, now.AddDate(0, 0, 7), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _ := keys.List(ctx)
+	if len(list) != 1 || !list[0].LastUsed.IsZero() || !list[0].Expires.Equal(now.AddDate(0, 0, 7)) {
+		t.Fatalf("keys = %+v", list)
+	}
+	now = now.Add(time.Hour)
+	if c, ok := keys.Check(ctx, value); !ok || !c.Has(ScopeLogs) || c.Has(ScopeGM) {
+		t.Fatalf("check = %+v, %v", c, ok)
+	}
+	if list, _ := keys.List(ctx); !list[0].LastUsed.Equal(now) {
+		t.Fatalf("last used = %v, want %v", list[0].LastUsed, now)
+	}
+	now = now.AddDate(0, 0, 7)
+	if _, ok := keys.Check(ctx, value); ok {
+		t.Fatal("an expired key still works")
+	}
+	var audit []store.Entry
+	db.View(ctx, func(tx *store.Tx) error {
+		audit, err = tx.AuditLog(0, 10)
+		return err
+	})
+	if len(audit) != 1 || !strings.Contains(audit[0].Detail, "2026-11-03 12:00 UTC 过期") {
+		t.Fatalf("audit = %+v", audit)
 	}
 }

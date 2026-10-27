@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ type Fake struct {
 	allocations int
 	servers     int // game servers allocated from the Ready ones
 	capacity    int
+	logQuery    cluster.LogQuery
 	retiring    map[string]bool
 	ended       map[string][]string
 	view        View
@@ -364,10 +366,32 @@ func (f *Fake) Events(_ context.Context, namespace, object string) ([]cluster.Ev
 	return events, nil
 }
 
-func (f *Fake) Log(_ context.Context, namespace, pod, container string, _ int) (string, error) {
+// Log returns the log the view has under "namespace/pod/container", or
+// under that and "#previous" for the previous run. It keeps the newest
+// q.Lines lines.
+func (f *Fake) Log(_ context.Context, namespace, pod string, q cluster.LogQuery) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.view.Logs[namespace+"/"+pod+"/"+container], f.err
+	f.logQuery = q
+	key := namespace + "/" + pod + "/" + q.Container
+	if q.Previous {
+		key += "#previous"
+	}
+	lines := strings.SplitAfter(f.view.Logs[key], "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if q.Lines > 0 && len(lines) > q.Lines {
+		lines = lines[len(lines)-q.Lines:]
+	}
+	return strings.Join(lines, ""), f.err
+}
+
+// LogQuery returns what the last read of a log asked for.
+func (f *Fake) LogQuery() cluster.LogQuery {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.logQuery
 }
 
 func (f *Fake) Usage(context.Context) (cluster.Usage, error) {

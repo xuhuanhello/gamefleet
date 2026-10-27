@@ -170,9 +170,13 @@ func history(db *store.Store, releases *release.Service, keys *auth.Keys, fake *
 		name  string
 		scope string
 	}{{"ci", auth.ScopePush}, {"nakama", auth.ScopeAllocate}} {
-		if _, err := keys.Create(ctx, k.name, []string{k.scope}, "admin"); err != nil {
+		if _, err := keys.Create(ctx, k.name, []string{k.scope}, time.Time{}, "admin"); err != nil {
 			return err
 		}
+	}
+	// A key for an AI agent that looks into problems: logs only, for a week.
+	if _, err := keys.Create(ctx, "agent", []string{auth.ScopeLogs}, at.AddDate(0, 0, 7), "admin"); err != nil {
+		return err
 	}
 	deploy := func(build int64) error {
 		_, err := releases.Deploy(ctx, release.DeployRequest{BuildID: build, Cluster: "us-1", Buffer: 1, MaxReplicas: 10, Rooms: 50,

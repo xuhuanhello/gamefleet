@@ -427,12 +427,29 @@ func (c *Client) Events(ctx context.Context, namespace, object string) ([]Event,
 	return events, nil
 }
 
-// Log returns the last lines of one container's log, at most 2 MiB.
-func (c *Client) Log(ctx context.Context, namespace, pod, container string, lines int) (string, error) {
+// LogQuery picks lines of one container's log.
+type LogQuery struct {
+	Container string
+	// Lines is how many of the newest lines; Since, if not zero, how recent
+	// they must be.
+	Lines int
+	Since time.Duration
+	// Previous asks for the container's run before it last restarted.
+	Previous bool
+}
+
+// Log returns lines of one container's log, at most 2 MiB.
+func (c *Client) Log(ctx context.Context, namespace, pod string, q LogQuery) (string, error) {
 	query := url.Values{
-		"container":  {container},
-		"tailLines":  {strconv.Itoa(lines)},
+		"container":  {q.Container},
+		"tailLines":  {strconv.Itoa(q.Lines)},
 		"limitBytes": {strconv.Itoa(2 << 20)},
+	}
+	if q.Since > 0 {
+		query.Set("sinceSeconds", strconv.Itoa(max(1, int(q.Since.Seconds()))))
+	}
+	if q.Previous {
+		query.Set("previous", "true")
 	}
 	var log []byte
 	if err := c.get(ctx, apiPath("", namespace, "pods", pod)+"/log", query, &log); err != nil {

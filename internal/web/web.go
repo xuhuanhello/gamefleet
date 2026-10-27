@@ -1018,7 +1018,7 @@ func (c *Console) server(w http.ResponseWriter, r *http.Request, p page) {
 	}
 	if data.Pod != nil && len(data.Pod.Containers) > 0 {
 		data.Container = data.Pod.Containers[0]
-		data.Log, err = s.Cluster.Log(ctx, ns, room.ID, data.Container, 100)
+		data.Log, err = s.Cluster.Log(ctx, ns, room.ID, cluster.LogQuery{Container: data.Container, Lines: 100})
 		fail(err)
 	}
 	p.Title = room.ID
@@ -1065,7 +1065,7 @@ func (c *Console) podLog(w http.ResponseWriter, r *http.Request, p page) {
 	if n, err := strconv.Atoi(r.URL.Query().Get("lines")); err == nil && slices.Contains(logLines, n) {
 		data.Lines = n
 	}
-	data.Log, err = s.Cluster.Log(ctx, pod.Namespace, pod.Name, data.Container, data.Lines)
+	data.Log, err = s.Cluster.Log(ctx, pod.Namespace, pod.Name, cluster.LogQuery{Container: data.Container, Lines: data.Lines})
 	if err != nil {
 		data.Err = err.Error()
 	}

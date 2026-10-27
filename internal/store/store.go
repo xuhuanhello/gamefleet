@@ -41,7 +41,15 @@ type Key struct {
 	Scopes    []string
 	Created   time.Time
 	CreatedBy string
+	// Expires is when the key stops working; zero if it never does.
+	Expires time.Time
+	// LastUsed is when a caller last presented the key since GameFleet
+	// started. auth.Keys keeps it in memory; it is not stored.
+	LastUsed time.Time
 }
+
+// Expired reports whether the key no longer works at now.
+func (k Key) Expired(now time.Time) bool { return !k.Expires.IsZero() && !now.Before(k.Expires) }
 
 // Build is one image that CI pushed and registered.
 type Build struct {
@@ -262,6 +270,9 @@ INSERT OR IGNORE INTO runtime_games (game)
 -- change. Deployments made before have the capacity of their setting.
 ALTER TABLE deployments ADD COLUMN rooms_capacity INTEGER NOT NULL DEFAULT 0;
 UPDATE deployments SET rooms_capacity = rooms;
+`, `
+-- Keys may expire; those made before do not.
+ALTER TABLE api_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;
 `}
 
 func (s *Store) migrate() error {
@@ -330,28 +341,33 @@ func fromMillis(ms int64) time.Time { return time.UnixMilli(ms) }
 // KeyByHash returns the key whose SHA-256 is sum.
 func (t *Tx) KeyByHash(sum []byte) (Key, error) {
 	return scanKey(t.tx.QueryRowContext(t.ctx,
-		`SELECT id, name, scopes, created_at, created_by FROM api_keys WHERE sha256 = ?`, sum))
+		`SELECT `+keyColumns+` FROM api_keys WHERE sha256 = ?`, sum))
 }
 
 // Keys lists all keys by name.
 func (t *Tx) Keys() ([]Key, error) {
-	rows, err := t.tx.QueryContext(t.ctx, `SELECT id, name, scopes, created_at, created_by FROM api_keys ORDER BY name`)
+	rows, err := t.tx.QueryContext(t.ctx, `SELECT `+keyColumns+` FROM api_keys ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	return collect(rows, scanKey)
 }
 
-// InsertKey stores a key. Names and hashes are unique.
-func (t *Tx) InsertKey(name string, sum []byte, scopes []string, by string) (Key, error) {
+// InsertKey stores a key that works until expires, or for ever if it is
+// zero. Names and hashes are unique.
+func (t *Tx) InsertKey(name string, sum []byte, scopes []string, expires time.Time, by string) (Key, error) {
+	var until int64
+	if !expires.IsZero() {
+		until = millis(expires)
+	}
 	res, err := t.tx.ExecContext(t.ctx,
-		`INSERT INTO api_keys (name, sha256, scopes, created_at, created_by) VALUES (?, ?, ?, ?, ?)`,
-		name, sum, strings.Join(scopes, " "), millis(t.now), by)
+		`INSERT INTO api_keys (name, sha256, scopes, created_at, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		name, sum, strings.Join(scopes, " "), millis(t.now), by, until)
 	if err != nil {
 		return Key{}, duplicate(err)
 	}
 	id, _ := res.LastInsertId()
-	return Key{ID: id, Name: name, Scopes: scopes, Created: t.now, CreatedBy: by}, nil
+	return Key{ID: id, Name: name, Scopes: scopes, Created: t.now, CreatedBy: by, Expires: expires}, nil
 }
 
 // DeleteKey removes the key with this name.
@@ -359,15 +375,20 @@ func (t *Tx) DeleteKey(name string) error {
 	return expectOne(t.tx.ExecContext(t.ctx, `DELETE FROM api_keys WHERE name = ?`, name))
 }
 
+const keyColumns = `id, name, scopes, created_at, created_by, expires_at`
+
 func scanKey(row scanner) (Key, error) {
 	var k Key
 	var scopes string
-	var created int64
-	if err := row.Scan(&k.ID, &k.Name, &scopes, &created, &k.CreatedBy); err != nil {
+	var created, expires int64
+	if err := row.Scan(&k.ID, &k.Name, &scopes, &created, &k.CreatedBy, &expires); err != nil {
 		return Key{}, notFound(err)
 	}
 	k.Scopes = strings.Fields(scopes)
 	k.Created = fromMillis(created)
+	if expires != 0 {
+		k.Expires = fromMillis(expires)
+	}
 	return k, nil
 }
 

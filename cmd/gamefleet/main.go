@@ -37,6 +37,9 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/config"
 	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/install"
+	"github.com/xuhuanhello/gamefleet/internal/logbook"
+	"github.com/xuhuanhello/gamefleet/internal/logs"
+	"github.com/xuhuanhello/gamefleet/internal/redact"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/release"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
@@ -84,14 +87,16 @@ func main() {
 	configPath := flag.String("config", "/etc/gamefleet/config.json", "path to the configuration file")
 	flag.Parse()
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(*configPath, log); err != nil {
+	// The logs API reads GameFleet's own newest lines from the book.
+	book := logbook.New(20000, time.Now)
+	log := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, book), nil))
+	if err := run(*configPath, log, book); err != nil {
 		log.Error("gamefleet stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string, log *slog.Logger) error {
+func run(configPath string, log *slog.Logger, book *logbook.Book) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -153,7 +158,8 @@ func run(configPath string, log *slog.Logger) error {
 		return err
 	}
 
-	machines := api.Handler(svc, releases, keys, monitor, log)
+	reader := logs.New(dir, book, db, redact.New(), time.Now)
+	machines := api.Handler(svc, releases, keys, monitor, reader, log)
 	mux := http.NewServeMux()
 	mux.Handle("/v2/", registry.NewProxy(upstream, keys, log))
 	mux.Handle("/api/", machines)

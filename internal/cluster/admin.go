@@ -31,7 +31,7 @@ type API interface {
 	Fleets(ctx context.Context) ([]Fleet, error)
 	Rooms(ctx context.Context) ([]Room, error)
 	Events(ctx context.Context, namespace, object string) ([]Event, error)
-	Log(ctx context.Context, namespace, pod, container string, lines int) (string, error)
+	Log(ctx context.Context, namespace, pod string, q LogQuery) (string, error)
 	Usage(ctx context.Context) (Usage, error)
 
 	Allocate(ctx context.Context, a Allocation) (Room, error)

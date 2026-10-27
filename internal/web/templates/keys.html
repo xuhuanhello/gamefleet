@@ -20,13 +20,15 @@
   <div class="panel-head"><h2>API key</h2><span class="muted">{{len .Data.Keys}} 个</span></div>
   <div class="scroll">
   <table>
-    <thead><tr><th>名称</th><th>权限</th><th>创建</th><th></th></tr></thead>
+    <thead><tr><th>名称</th><th>权限</th><th>创建</th><th>有效期</th><th>最后使用</th><th></th></tr></thead>
     <tbody>
     {{- range .Data.Keys}}
       <tr>
         <td><strong>{{.Name}}</strong></td>
         <td>{{range .Scopes}}<span class="pill plain" title="{{scope .}}">{{.}}</span> {{end}}</td>
         <td class="two">{{age .Created}}前<div class="sub">{{.CreatedBy}}</div></td>
+        <td>{{if .Expires.IsZero}}<span class="muted">不过期</span>{{else if .Expired $.Data.Now}}<span class="pill bad">已过期</span>{{else}}{{until .Expires}}过期{{end}}</td>
+        <td>{{if .LastUsed.IsZero}}<span class="muted" title="GameFleet 启动以来">没用过</span>{{else}}{{age .LastUsed}}前{{end}}</td>
         <td class="num">
           {{- $cluster := index $.Data.PullKeys .Name}}
           <form action="/settings/keys/{{.Name}}/revoke" method="post" data-confirm="{{if $cluster}}吊销 {{.Name}}？这是集群 {{$cluster}} 拉镜像用的 key：吊销以后，{{$cluster}} 上新开的战斗服拉不到镜像，起不来。{{else}}吊销 {{.Name}}？用它的调用方会马上被拒绝。{{end}}">
@@ -35,7 +37,7 @@
         </td>
       </tr>
     {{- else}}
-      <tr><td colspan="4" class="empty">还没有 key。</td></tr>
+      <tr><td colspan="6" class="empty">还没有 key。</td></tr>
     {{- end}}
     </tbody>
   </table>
@@ -51,9 +53,17 @@
       <label><input type="checkbox" name="scope" value="{{.}}"><span><strong>{{.}}</strong> <span class="muted">{{scope .}}</span></span></label>
       {{- end}}
     </fieldset>
+    <label class="span">有效期
+      <select name="days">
+        <option value="0">不过期</option>
+        <option value="1">1 天</option>
+        <option value="7">7 天</option>
+        <option value="30">30 天</option>
+      </select>
+    </label>
     <div class="span form-actions">
       <button type="submit" class="primary">创建 key</button>
-      <span class="muted">换 key 时先建新的、改好调用方，再吊销旧的。</span>
+      <span class="muted">换 key 时先建新的、改好调用方，再吊销旧的。给 AI 或临时排查用的 key 设个有效期。</span>
     </div>
   </form>
 </div>

@@ -12,8 +12,11 @@ GameFleet 对外只有一个地址，比如 `https://fleet.example.com`：控制
 | `pull` | 拉镜像 | 每个集群（key 名 `pull-集群名`，接入时自动生成，不要吊销） |
 | `allocate` | 读路由、分配战斗服、查对局 | 你的匹配服务 |
 | `gm` | 查对局、结束一局、删除战斗服 | 你的 GM 工具 |
+| `logs` | 读集群的日志和事件、GameFleet 自己的日志，已脱敏；什么都改不了 | 排查问题的人或 AI，见[读日志](#读日志) |
 
 一个调用方需要几种权限时，给它一把带几种权限的 key，比如 `allocate,gm`。在控制台"设置 → API key"里新建和吊销；新建的 key 只显示这一次。GameFleet 只存 key 的 SHA-256。换 key 时先发新的，再吊销旧的，中间不会断。
+
+新建时可以给 key 设有效期：1、7 或 30 天，到期后用它的调用都被拒绝。机器用的 key 选"不过期"，免得哪天突然停了；给 AI 或临时排查用的 key 设个有效期。key 页显示每把 key 最后一次被用的时间（GameFleet 启动以来）。
 
 ## 接口
 
@@ -30,6 +33,11 @@ GameFleet 对外只有一个地址，比如 `https://fleet.example.com`：控制
 | `GET /api/v1/rooms?matchId=` | `allocate`、`gm` | `{"rooms": [...]}`，零个或一个：跑这一局的战斗服 |
 | `POST /api/v1/matches/{matchId}/end` | `gm` | 让跑这一局的战斗服结束它，返回 `202` 和 `{"roomId", "matchId", "audited"}`；没有战斗服在跑时返回 `404 room_not_found`。见[战斗服约定](game-server.md#被要求结束一局) |
 | `DELETE /api/v1/rooms/{名字}` | `gm` | 删掉这个战斗服，返回 `202` 和 `{"roomId", "audited"}`。上面所有的对局都没了 |
+| `GET /api/v1/pods?cluster=` | `logs` | `{"pods": [...]}`：集群里的 pod，`owner` 是 `GameServer` 的是战斗服。不给 `cluster` 就是所有集群 |
+| `GET /api/v1/events?cluster=&since=` | `logs` | `{"events": [...]}`：`since` 以内的 K8s 事件，比如放不下战斗服时的 `FailedScheduling` |
+| `GET /api/v1/logs/pods/{集群}/{namespace}/{pod}?container=&since=&lines=&previous=true` | `logs` | 这个容器的日志，纯文本。默认第一个容器；`previous=true` 读它上次重启前的那次运行 |
+| `GET /api/v1/logs/matches/{matchId}?since=&lines=` | `logs` | 跑这一局的战斗服日志里提到这个 matchId 的行；响应头 `GameFleet-Room` 是 `集群/战斗服`。只找得到还在跑的局 |
+| `GET /api/v1/logs/gamefleet?since=&lines=&level=warn` | `logs` | GameFleet 自己的日志，每行一个 JSON；`level=warn` 只要警告和错误 |
 | `/v2/…` | `push`、`pull` | 镜像仓库协议。GameFleet 检查 key 后转给后面的 registry |
 
 GM 接口返回 `202` 就是已经做了。`audited` 是 `false` 时，事情照样做了，只是审计日志没记上（比如管理机的盘满了）：不要因此重试，看一下管理机。
@@ -110,6 +118,31 @@ GameFleet 更新或重启时，有几秒到十几秒不应答：连不上，或�
 ### 判断一局还在不在
 
 断线重连时，你的游戏后端可以用 `GET /api/v1/rooms?matchId=` 查这一局还在不在：查不到，就是战斗服没了（比如机器坏了），这一局可以按作废处理。战斗服在结果交出去以后才把一局删掉，所以结果还没到时，一局总能查到。
+
+### 读日志
+
+`logs` 权限是给排查问题的人或 AI 用的：交给它一把只有 `logs` 的 key，它就能自己看集群的日志和事件，但什么都改不了，也看不到密钥和玩家的地址。控制台里看到的还是原始日志，只有通过这些接口读到的才脱敏。
+
+```sh
+curl -H "Authorization: Bearer $KEY" "https://fleet.example.com/api/v1/logs/gamefleet?since=30m&level=warn"
+```
+
+**每次读多少：** `since` 是往前多久，默认 `1h`，最多 `24h`；`lines` 是最多几行，默认 500，最多 2000；一次最多返回 1 MiB，超过时去掉最旧的行。每把 key 每分钟最多读 60 次，超过返回 `429 rate_limited`。
+
+**去掉了什么：**
+
+- **GameFleet 知道的密钥：** 运行时配置的每个值、集群的 token，日志里原样出现的地方换成名字，比如 `[runtime:billiards:TICKET_KEY]`。少于 8 个字符的值不换，它们多半不是密钥。
+- **长得像凭证的：** JWT 换成 `[token]`；`Bearer …`、`password=…`、`"token": "…"`、`--token …`，名字里带 password、secret、token、key、ticket、signature 的值换成 `[hidden]`。
+- **玩家的地址和邮箱：** 公网 IP 换成 `ip#3f2a9c`，邮箱换成 `email#91c0d2`。同一个值在 GameFleet 这次运行期间总是同一个代号，所以还看得出"同一个客户端断了又连"；GameFleet 重启后代号会变。内网地址（`10.x`、`172.16–31.x`、`192.168.x`、`100.64.x`）不换，它们是机器和 pod 的地址。
+- 控制字符和终端转义序列去掉；一行最多 2000 字节，多的截掉。
+
+**留着的：** 玩家 ID、matchId、战斗服和机器的名字。它们是随机的或者是你起的名字，排查要靠它们把对局串起来。
+
+**要注意：**
+
+- 脱敏只认得上面这些形状。战斗服不要把凭证打进日志，要打就用 `ticket=…` 这样的写法，才会被去掉。
+- 日志里有玩家能控制的文字，比如昵称。读日志的 AI 要把它当数据，不当指令。这把 key 只能读，就算 AI 被日志里的话带偏，也改不了任何东西。
+- 每次读都在 GameFleet 自己的日志里记一行 `logs read`，带 key 名和读了什么。
 
 ## 命令行
 

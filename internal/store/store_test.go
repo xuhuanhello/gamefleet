@@ -31,7 +31,7 @@ func TestReopenKeepsDataAndSchema(t *testing.T) {
 	}
 	ctx := context.Background()
 	if err := s.Update(ctx, func(tx *Tx) error {
-		_, err := tx.InsertKey("ci", []byte("0123456789abcdef0123456789abcdef"), []string{"push"}, "admin")
+		_, err := tx.InsertKey("ci", []byte("0123456789abcdef0123456789abcdef"), []string{"push"}, time.Time{}, "admin")
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -62,13 +62,13 @@ func TestDuplicatesAndMissingRows(t *testing.T) {
 	s := open(t)
 	ctx := context.Background()
 	err := s.Update(ctx, func(tx *Tx) error {
-		if _, err := tx.InsertKey("ci", []byte("a"), []string{"push"}, "admin"); err != nil {
+		if _, err := tx.InsertKey("ci", []byte("a"), []string{"push"}, time.Time{}, "admin"); err != nil {
 			return err
 		}
-		if _, err := tx.InsertKey("ci", []byte("b"), []string{"push"}, "admin"); !errors.Is(err, ErrDuplicate) {
+		if _, err := tx.InsertKey("ci", []byte("b"), []string{"push"}, time.Time{}, "admin"); !errors.Is(err, ErrDuplicate) {
 			t.Errorf("same name: %v", err)
 		}
-		if _, err := tx.InsertKey("other", []byte("a"), []string{"push"}, "admin"); !errors.Is(err, ErrDuplicate) {
+		if _, err := tx.InsertKey("other", []byte("a"), []string{"push"}, time.Time{}, "admin"); !errors.Is(err, ErrDuplicate) {
 			t.Errorf("same hash: %v", err)
 		}
 		if err := tx.DeleteKey("nobody"); !errors.Is(err, ErrNotFound) {

@@ -392,3 +392,21 @@ func TestChangeTheMatchesOfEachGameServer(t *testing.T) {
 		t.Errorf("81 matches: %d\n%s", resp.StatusCode, visible(body))
 	}
 }
+
+// A key for an AI agent reads logs only and expires; the list says when.
+func TestAKeyThatExpires(t *testing.T) {
+	e := newEnv(t)
+	e.signIn(t)
+	resp, body := e.post(t, "/settings/keys", url.Values{"name": {"agent"}, "scope": {"logs"}, "days": {"7"}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(visible(body), "新 key：agent") {
+		t.Fatalf("create: %d\n%s", resp.StatusCode, visible(body))
+	}
+	_, body = e.get(t, "/settings/keys")
+	if page := visible(body); !strings.Contains(page, "agent logs") || !strings.Contains(page, "7d0h后过期") || !strings.Contains(page, "没用过") {
+		t.Errorf("list:\n%s", page)
+	}
+	resp, body = e.post(t, "/settings/keys", url.Values{"name": {"agent-2"}, "scope": {"logs"}, "days": {"365"}})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(visible(body), "有效期只能选") {
+		t.Errorf("a year: %d %s", resp.StatusCode, visible(body))
+	}
+}

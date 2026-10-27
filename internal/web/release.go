@@ -36,7 +36,7 @@ type Releases interface {
 // Keys is what the console manages through auth.Keys.
 type Keys interface {
 	List(ctx context.Context) ([]store.Key, error)
-	Create(ctx context.Context, name string, scopes []string, actor string) (string, error)
+	Create(ctx context.Context, name string, scopes []string, expires time.Time, actor string) (string, error)
 	Revoke(ctx context.Context, name, actor string) error
 }
 
@@ -486,6 +486,7 @@ func routesFinding(rows []routeRow) finding {
 // --- Settings
 
 type keysPage struct {
+	Now    time.Time
 	Keys   []store.Key
 	Scopes []string
 	// PullKeys names the cluster each cluster's own pull key belongs to.
@@ -505,6 +506,7 @@ func (c *Console) renderKeys(w http.ResponseWriter, r *http.Request, p page, sta
 		c.fail(w, p, err)
 		return
 	}
+	data.Now = c.now()
 	data.Keys = keys
 	data.Scopes = auth.Scopes
 	data.PullKeys = map[string]string{}
@@ -530,7 +532,17 @@ func (c *Console) createKey(w http.ResponseWriter, r *http.Request, p page) {
 		return
 	}
 	name := strings.TrimSpace(r.PostForm.Get("name"))
-	value, err := c.apiKeys.Create(r.Context(), name, r.PostForm["scope"], p.User)
+	var expires time.Time
+	switch days := r.PostForm.Get("days"); days {
+	case "", "0":
+	case "1", "7", "30":
+		n, _ := strconv.Atoi(days)
+		expires = c.now().AddDate(0, 0, n)
+	default:
+		c.renderKeys(w, r, p, http.StatusBadRequest, keysPage{Err: "有效期只能选 1、7、30 天或不过期"})
+		return
+	}
+	value, err := c.apiKeys.Create(r.Context(), name, r.PostForm["scope"], expires, p.User)
 	if errors.Is(err, auth.ErrInvalidKey) {
 		c.renderKeys(w, r, p, http.StatusBadRequest, keysPage{Err: err.Error()})
 		return

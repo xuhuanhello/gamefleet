@@ -176,13 +176,15 @@ func TestEventsNewestFirst(t *testing.T) {
 func TestLogReturnsTheRawText(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if r.URL.Path != "/api/v1/namespaces/games/pods/gs-1/log" || q.Get("container") != "billiards" || q.Get("tailLines") != "200" {
+		if r.URL.Path != "/api/v1/namespaces/games/pods/gs-1/log" || q.Get("container") != "billiards" || q.Get("tailLines") != "200" ||
+			q.Get("sinceSeconds") != "1800" || q.Get("previous") != "true" {
 			t.Errorf("unexpected request %s?%s", r.URL.Path, r.URL.RawQuery)
 		}
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "DM_SERVER_READY\nDM_ALLOCATED match=m-1\n")
 	})
-	log, err := client.Log(context.Background(), "games", "gs-1", "billiards", 200)
+	log, err := client.Log(context.Background(), "games", "gs-1",
+		LogQuery{Container: "billiards", Lines: 200, Since: 30 * time.Minute, Previous: true})
 	if err != nil || log != "DM_SERVER_READY\nDM_ALLOCATED match=m-1\n" {
 		t.Fatalf("log = %q, err = %v", log, err)
 	}

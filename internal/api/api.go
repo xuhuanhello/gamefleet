@@ -18,6 +18,7 @@ import (
 	"github.com/xuhuanhello/gamefleet/internal/buildinfo"
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
 	"github.com/xuhuanhello/gamefleet/internal/health"
+	"github.com/xuhuanhello/gamefleet/internal/logs"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/release"
 	"github.com/xuhuanhello/gamefleet/internal/store"
@@ -40,13 +41,16 @@ type handler struct {
 	releases Releases
 	keys     Keys
 	monitor  *health.Monitor
+	logs     *logs.Service
+	limits   *limiter
 	log      *slog.Logger
 }
 
 // Handler returns the HTTP handler for the machine API, /healthz and
-// /status. monitor may be nil: /status then answers 404.
-func Handler(svc *allocate.Service, releases Releases, keys Keys, monitor *health.Monitor, log *slog.Logger) http.Handler {
-	h := &handler{svc: svc, releases: releases, keys: keys, monitor: monitor, log: log}
+// /status. monitor may be nil: /status then answers 404; so may reader, and
+// the endpoints of the logs scope do too.
+func Handler(svc *allocate.Service, releases Releases, keys Keys, monitor *health.Monitor, reader *logs.Service, log *slog.Logger) http.Handler {
+	h := &handler{svc: svc, releases: releases, keys: keys, monitor: monitor, logs: reader, limits: &limiter{}, log: log}
 	mux := http.NewServeMux()
 	// For an outside monitor, without a key: what needs a person, with no
 	// secret in it. 503 when something does.
@@ -72,6 +76,7 @@ func Handler(svc *allocate.Service, releases Releases, keys Keys, monitor *healt
 	mux.Handle("GET /api/v1/rooms/{id}", h.require(h.room, auth.ScopeAllocate, auth.ScopeGM))
 	mux.Handle("DELETE /api/v1/rooms/{id}", h.require(h.shutdown, auth.ScopeGM))
 	mux.Handle("POST /api/v1/matches/{matchId}/end", h.require(h.endMatch, auth.ScopeGM))
+	h.logRoutes(mux)
 	return mux
 }
 

@@ -99,7 +99,7 @@ func newServerWith(t *testing.T, ready int, wrap func(Releases) Releases, monito
 		t.Fatal(err)
 	}
 	svc := allocate.New(releases, dir)
-	server := httptest.NewServer(Handler(svc, wrap(releases), keys, monitor, log))
+	server := httptest.NewServer(Handler(svc, wrap(releases), keys, monitor, nil, log))
 	t.Cleanup(server.Close)
 	return server, fake
 }

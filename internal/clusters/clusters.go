@@ -520,7 +520,7 @@ func PullKeyCluster(keyName string, clusters []string) (string, bool) {
 // all the same, its answer lost. The next renewal that succeeds revokes it.
 func (s *Service) renewPullKey(ctx context.Context, api cluster.API, clusterName, actor string) error {
 	name := pullKeyPrefix + random(4)[:6] + "-" + clusterName
-	key, err := s.keys.Create(ctx, name, []string{auth.ScopePull}, actor)
+	key, err := s.keys.Create(ctx, name, []string{auth.ScopePull}, time.Time{}, actor)
 	if err != nil {
 		return err
 	}

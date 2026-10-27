@@ -206,6 +206,7 @@ var scopeLabels = map[string]string{
 	"pull":     "拉镜像",
 	"allocate": "给对局分配战斗服",
 	"gm":       "查询和结束对局",
+	"logs":     "读集群和 GameFleet 的日志、事件，已脱敏，什么都改不了",
 }
 
 // scopeLabel says what an API key scope allows.
