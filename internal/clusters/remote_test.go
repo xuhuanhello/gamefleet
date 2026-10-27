@@ -338,3 +338,173 @@ func TestAMachineWithoutAHostKeyIsRefused(t *testing.T) {
 		t.Fatalf("%d join codes made for it", joins)
 	}
 }
+
+// tokens is a cluster that takes only some tokens: GameFleet's client with
+// any other gets 401, as from a real API server.
+type tokens struct {
+	mu    sync.Mutex
+	valid map[string]bool
+	used  []string
+	fake  *clustertest.Fake
+}
+
+func (k *tokens) connect(c store.Cluster) (cluster.API, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.used = append(k.used, c.Token)
+	if !k.valid[c.Token] {
+		denied := clustertest.New(c.Name, 0)
+		denied.Fail(fmt.Errorf("%w: cluster %s: GET /api/v1/nodes returned 401", cluster.ErrUnavailable, c.Name))
+		return denied, nil
+	}
+	return k.fake, nil
+}
+
+func (k *tokens) take(token ...string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.valid = map[string]bool{}
+	for _, t := range token {
+		k.valid[t] = true
+	}
+}
+
+func pullKeys(t *testing.T, f *fixture) []string {
+	t.Helper()
+	keys, err := f.keys.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, k := range keys {
+		if strings.HasPrefix(k.Name, "pull") {
+			names = append(names, k.Name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// A cluster GameFleet has rejoins from its control plane: GameFleet takes the
+// connection it reports, once it works, with a new pull key; the old pull
+// key goes only once the cluster has the new one.
+func TestRejoinReplacesTheConnection(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	k := &tokens{fake: clustertest.New("us-1", 0)}
+	k.take("sa-token")
+	f.svc.connect = k.connect
+	if err := f.svc.Add(ctx, *connection("us-1", "us"), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pullKeys(t, f); !slices.Equal(got, []string{"pull-us-1"}) {
+		t.Fatalf("pull keys = %v", got)
+	}
+	if _, err := f.svc.StartJoin(ctx, "us-1", "us", false, "admin"); err == nil || !strings.Contains(err.Error(), "重新接入") {
+		t.Fatalf("joining us-1 as new: %v", err)
+	}
+
+	j, err := f.svc.StartRejoin(ctx, "us-1", false, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command := f.svc.InstallCommand(j); !strings.HasSuffix(command, "--code "+j.Code+" --rejoin") {
+		t.Fatalf("command = %s", command)
+	}
+	// The control plane was reinstalled: a new token.
+	k.take("sa-token-2")
+	next := connection("us-1", "us")
+	next.Token = "sa-token-2"
+	if err := f.svc.Report(ctx, j.Code, "203.0.113.7", Report{Stage: StageConnect, Connection: next}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := f.svc.Stored(ctx, "us-1")
+	if stored.Token != "sa-token-2" {
+		t.Fatalf("stored token = %s", stored.Token)
+	}
+	if got := pullKeys(t, f); !slices.Equal(got, []string{"pull2-us-1"}) {
+		t.Fatalf("pull keys after the rejoin = %v", got)
+	}
+	if _, ok := k.fake.Secret(cluster.PullSecretName); !ok {
+		t.Fatal("the cluster got no pull Secret")
+	}
+	if got, _ := f.svc.JoinByID(j.ID); got.Stage != StageDone || got.Message != "" {
+		t.Fatalf("join = %+v", got)
+	}
+	// The script reports again when it missed the answer: nothing changes.
+	used := len(k.used)
+	if err := f.svc.Update(ctx, *next, "admin"); err != nil || len(k.used) != used {
+		t.Fatalf("the same connection again: %v, connected %d more times", err, len(k.used)-used)
+	}
+	// Another region is another cluster.
+	other := connection("us-1", "eu")
+	if err := f.svc.Update(ctx, *other, "admin"); err == nil {
+		t.Fatal("us-1 moved to region eu")
+	}
+}
+
+// Rotating the token ends the old one; when the old one still works, the
+// console says so.
+func TestRejoinRotatesTheToken(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	k := &tokens{fake: clustertest.New("us-1", 0)}
+	k.take("sa-token")
+	f.svc.connect = k.connect
+	if err := f.svc.Add(ctx, *connection("us-1", "us"), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		old, new  string
+		oldEnded  bool
+		wantAlert string
+	}{
+		{"sa-token", "sa-token-2", true, ""},
+		{"sa-token-2", "sa-token-3", false, "旧的 token 还能用"},
+	} {
+		j, err := f.svc.StartRejoin(ctx, "us-1", true, "admin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(f.svc.InstallCommand(j), " --rejoin --rotate-token") {
+			t.Fatalf("command = %s", f.svc.InstallCommand(j))
+		}
+		if c.oldEnded {
+			k.take(c.new)
+		} else {
+			k.take(c.old, c.new)
+		}
+		next := connection("us-1", "us")
+		next.Token = c.new
+		if err := f.svc.Report(ctx, j.Code, "203.0.113.7", Report{Stage: StageConnect, Connection: next}); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := f.svc.JoinByID(j.ID)
+		if got.Stage != StageDone || (c.wantAlert == "") != (got.Message == "") || !strings.Contains(got.Message, c.wantAlert) {
+			t.Fatalf("rotation from %s: join = %+v", c.old, got)
+		}
+	}
+}
+
+// failingSecrets is a cluster that takes no Secret.
+type failingSecrets struct{ *clustertest.Fake }
+
+func (failingSecrets) ApplySecret(context.Context, cluster.Secret) error {
+	return errors.New("connection reset")
+}
+
+// A new pull key that the cluster could not take is revoked, and the one it
+// has stays: image pulls keep working.
+func TestAFailedPullKeyLeavesTheOldOne(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.svc.Add(ctx, *connection("us-1", "us"), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.renewPullKey(ctx, failingSecrets{clustertest.New("us-1", 0)}, "us-1", "admin"); err == nil {
+		t.Fatal("renewing the pull key into a cluster that takes no Secret succeeded")
+	}
+	if got := pullKeys(t, f); !slices.Equal(got, []string{"pull-us-1"}) {
+		t.Fatalf("pull keys = %v", got)
+	}
+}

@@ -112,7 +112,7 @@ func New(o Options) (*Console, error) {
 		},
 	}
 	for _, name := range []string{"login", "message", "refused", "overview", "cluster", "node", "servers", "server", "log", "events",
-		"builds", "build", "routes", "keys", "audit", "join", "runtime", "nodejob", "addnode", "update"} {
+		"builds", "build", "routes", "keys", "audit", "join", "rejoin", "runtime", "nodejob", "addnode", "update"} {
 		t, err := template.New(name).Funcs(funcs).ParseFS(templates,
 			"templates/layout.html", "templates/parts.html", "templates/"+name+".html")
 		if err != nil {
@@ -167,6 +167,8 @@ func (c *Console) Handler() http.Handler {
 	mux.Handle("POST /clusters/new", c.signedIn(c.startJoin))
 	mux.Handle("POST /clusters/new/{id}/retry", c.signedIn(c.retryJoin))
 	mux.Handle("POST /clusters/new/{id}/confirm", c.signedIn(c.confirmJoin))
+	mux.Handle("GET /clusters/{cluster}/rejoin", c.signedIn(c.rejoinPage))
+	mux.Handle("POST /clusters/{cluster}/rejoin", c.signedIn(c.startRejoin))
 	mux.Handle("POST /clusters/new/{id}/cancel", c.signedIn(c.cancelJoin))
 	mux.Handle("GET /clusters/{cluster}/nodes/new", c.signedIn(c.nodeJob))
 	mux.Handle("POST /clusters/{cluster}/nodes/new", c.signedIn(c.startNodeJoin))

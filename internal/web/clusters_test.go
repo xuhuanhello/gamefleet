@@ -298,3 +298,38 @@ func TestCancelAJoinFromTheChecklist(t *testing.T) {
 		t.Fatal("a cancelled install ran")
 	}
 }
+
+// A cluster rejoins from its page: the command runs again on its control
+// plane, and GameFleet takes the new connection.
+func TestRejoinAClusterFromItsPage(t *testing.T) {
+	e := newEnv(t)
+	e.signIn(t)
+	ca := base64.StdEncoding.EncodeToString([]byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"))
+	conn := clusters.Connection{Name: "eu-1", Region: "eu", Server: "https://203.0.113.20:6443",
+		CABase64: ca, Token: "t", Namespace: clusters.Namespace, JoinURL: "https://203.0.113.20:6443", JoinToken: "jt"}
+	if err := e.clusters.Add(context.Background(), conn, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	_, body := e.get(t, "/clusters/eu-1")
+	contains(t, body, `href="/clusters/eu-1/rejoin"`)
+	_, body = e.get(t, "/clusters/eu-1/rejoin")
+	contains(t, visible(body), "重新接入 eu-1", "同时换掉 GameFleet 用的 token", "只要命令，我自己执行")
+
+	resp, _ := e.post(t, "/clusters/eu-1/rejoin", url.Values{"mode": {"manual"}, "rotateToken": {"1"}})
+	where := resp.Header.Get("Location")
+	if resp.StatusCode != http.StatusSeeOther || !strings.HasPrefix(where, "/clusters/new?join=") {
+		t.Fatalf("start: %d %s", resp.StatusCode, where)
+	}
+	_, body = e.get(t, where)
+	contains(t, visible(body), "重新接入 eu-1", "--rejoin --rotate-token")
+	id := where[strings.Index(where, "join=")+len("join="):]
+	j, _ := e.clusters.JoinByID(id)
+	conn.Token = "t2"
+	if err := e.clusters.Report(context.Background(), j.Code, "203.0.113.20", clusters.Report{Stage: clusters.StageConnect, Connection: &conn}); err != nil {
+		t.Fatal(err)
+	}
+	_, body = e.get(t, where)
+	contains(t, visible(body), "eu-1 已经重新接入，GameFleet 用上了新的连接信息和新的 token")
+	_, body = e.get(t, "/settings/audit")
+	contains(t, visible(body), "重新接入集群 eu-1 换了token")
+}

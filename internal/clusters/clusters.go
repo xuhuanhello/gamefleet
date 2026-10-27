@@ -156,7 +156,11 @@ type Join struct {
 	// ControlPlaneOnly keeps game servers off the first machine: they run
 	// on machines added later.
 	ControlPlaneOnly bool
-	Stage            string
+	// Rejoin joins a cluster GameFleet has already, run again on its
+	// control plane, and replaces how GameFleet reaches it. RotateToken also
+	// replaces GameFleet's token there, which ends the old one.
+	Rejoin, RotateToken bool
+	Stage               string
 	// Step is where the stage is, in the install script's words, with Part
 	// of Parts done; StepStarted is when the script got there.
 	Step        string
@@ -188,7 +192,7 @@ func (s *Service) StartJoin(ctx context.Context, clusterName, region string, con
 	}
 	for _, site := range s.sites.All() {
 		if site.Name == clusterName {
-			return Join{}, refuse("已经有叫 %s 的集群", clusterName)
+			return Join{}, refuse("已经有叫 %s 的集群。要更新它的连接信息或者换 token，到它的集群页点\"重新接入\"", clusterName)
 		}
 		if site.Region == region {
 			return Join{}, refuse("地区 %s 已经由集群 %s 服务；一个地区只有一个集群，要扩容就给它加机器", region, site.Name)
@@ -197,6 +201,30 @@ func (s *Service) StartJoin(ctx context.Context, clusterName, region string, con
 	now := s.now()
 	j := &Join{ID: random(10), Code: random(20), Name: clusterName, Region: region, Expires: now.Add(JoinCodeTTL),
 		ControlPlaneOnly: controlPlaneOnly, Stage: StageWaiting, Updated: now, By: actor}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forget(now)
+	s.joins[j.ID] = j
+	return *j, nil
+}
+
+// StartRejoin makes a join code for a cluster GameFleet has already, for its
+// install command to be run again on its control plane: GameFleet takes the
+// connection it reports in place of the one it has. With rotateToken the
+// command first replaces GameFleet's token in the cluster, which ends the old
+// one; use it when the token may have leaked. The control plane keeps its
+// setup, whether it runs game servers included.
+func (s *Service) StartRejoin(ctx context.Context, clusterName string, rotateToken bool, actor string) (Join, error) {
+	stored, ok, err := s.Stored(ctx, clusterName)
+	if err != nil {
+		return Join{}, err
+	}
+	if !ok {
+		return Join{}, refuse("没有叫 %s 的集群", clusterName)
+	}
+	now := s.now()
+	j := &Join{ID: random(10), Code: random(20), Name: stored.Name, Region: stored.Region, Expires: now.Add(JoinCodeTTL),
+		Rejoin: true, RotateToken: rotateToken, Stage: StageWaiting, Updated: now, By: actor}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.forget(now)
@@ -317,17 +345,31 @@ func (s *Service) Report(ctx context.Context, code, ip string, r Report) error {
 		j.StepStarted = s.now()
 	}
 	j.Stage, j.Step, j.Part, j.Parts = StageConnect, "", 0, 0
-	clusterName, region, actor := j.Name, j.Region, j.By
+	clusterName, region, actor, rejoin, rotate := j.Name, j.Region, j.By, j.Rejoin, j.RotateToken
 	s.mu.Unlock()
 
 	err := errors.New("没有连接信息")
+	var old store.Cluster
 	if r.Connection != nil {
 		c := *r.Connection
-		if c.Name != clusterName || c.Region != region {
+		switch {
+		case c.Name != clusterName || c.Region != region:
 			err = refuse("安装脚本报的是 %s/%s，和接入码的 %s/%s 不一致", c.Name, c.Region, clusterName, region)
-		} else {
+		case rejoin:
+			var ok bool
+			if old, ok, err = s.Stored(ctx, clusterName); err == nil && !ok {
+				err = refuse("GameFleet 里已经没有集群 %s 了", clusterName)
+			}
+			if err == nil {
+				err = s.Update(ctx, c, actor)
+			}
+		default:
 			err = s.Add(ctx, c, actor)
 		}
+	}
+	notice := ""
+	if err == nil && rotate {
+		notice = s.oldTokenEnded(ctx, old)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -335,28 +377,160 @@ func (s *Service) Report(ctx context.Context, code, ip string, r Report) error {
 		j.Message = err.Error()
 		return err
 	}
-	j.Stage, j.Message = StageDone, ""
+	j.Stage, j.Message = StageDone, notice
 	j.target = nil
 	return nil
 }
 
-// Add connects to a cluster, gives it a pull key and stores it. Adding a
-// cluster that is already stored with the same server succeeds and changes
-// nothing.
-func (s *Service) Add(ctx context.Context, c Connection, actor string) error {
+// oldTokenEnded checks that the token GameFleet had before a rotation no
+// longer works, and says what it found when it does not know or it does.
+func (s *Service) oldTokenEnded(ctx context.Context, old store.Cluster) string {
+	api, err := s.connect(old)
+	if err == nil {
+		_, err = api.Nodes(ctx)
+	}
+	switch {
+	case err == nil:
+		return "新的 token 已经用上了，但旧的 token 还能用，没有作废。请在控制面上执行 kubectl -n " + old.Namespace + " delete secret gamefleet-token，再重新接入一次"
+	case strings.Contains(err.Error(), "returned 401"):
+		return ""
+	default:
+		return "新的 token 已经用上了；旧的 token 有没有作废，GameFleet 没能确认：" + err.Error()
+	}
+}
+
+// checkConnection validates what an install script reported, and returns
+// it as GameFleet stores it.
+func checkConnection(c Connection, actor string) (store.Cluster, error) {
 	ca, err := base64.StdEncoding.DecodeString(c.CABase64)
 	switch {
 	case !name.MatchString(c.Name) || !name.MatchString(c.Region) || !name.MatchString(c.Namespace):
-		return refuse("集群名、地区和命名空间只能用小写字母、数字和横线")
+		return store.Cluster{}, refuse("集群名、地区和命名空间只能用小写字母、数字和横线")
 	case !httpsURL(c.Server) || !httpsURL(c.JoinURL):
-		return refuse("server 和 joinUrl 要是 https 地址")
+		return store.Cluster{}, refuse("server 和 joinUrl 要是 https 地址")
 	case err != nil || !strings.Contains(string(ca), "BEGIN CERTIFICATE"):
-		return refuse("caBase64 不是证书")
+		return store.Cluster{}, refuse("caBase64 不是证书")
 	case c.Token == "" || c.JoinToken == "":
-		return refuse("缺少 token 或 joinToken")
+		return store.Cluster{}, refuse("缺少 token 或 joinToken")
 	}
-	stored := store.Cluster{Name: c.Name, Region: c.Region, Server: c.Server, CA: string(ca), Token: c.Token,
-		Namespace: c.Namespace, JoinURL: c.JoinURL, JoinToken: c.JoinToken, CreatedBy: actor}
+	return store.Cluster{Name: c.Name, Region: c.Region, Server: c.Server, CA: string(ca), Token: c.Token,
+		Namespace: c.Namespace, JoinURL: c.JoinURL, JoinToken: c.JoinToken, CreatedBy: actor}, nil
+}
+
+// Update replaces how GameFleet reaches a cluster it has: the connection a
+// rejoin reported. GameFleet checks the new connection works, writes the
+// cluster a new pull key, and only then stores it and uses it. The same
+// connection again changes nothing.
+func (s *Service) Update(ctx context.Context, c Connection, actor string) error {
+	next, err := checkConnection(c, actor)
+	if err != nil {
+		return err
+	}
+	old, ok, err := s.Stored(ctx, c.Name)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !ok:
+		return refuse("没有叫 %s 的集群", c.Name)
+	case old.Region != next.Region:
+		return refuse("集群 %s 服务的是地区 %s，不是 %s", c.Name, old.Region, next.Region)
+	}
+	next.Created, next.CreatedBy = old.Created, old.CreatedBy
+	if next == old {
+		return nil
+	}
+	api, err := s.connect(next)
+	if err != nil {
+		return refuse("连接信息不对：%v", err)
+	}
+	if err := api.Check(ctx); err != nil {
+		return refuse("GameFleet 用新的连接信息连不上 %s：%v", c.Server, err)
+	}
+	if err := s.renewPullKey(ctx, api, c.Name, actor); err != nil {
+		return err
+	}
+	if err := s.applyVars(ctx, api); err != nil {
+		return refuse("写不进战斗服的运行时配置：%v", err)
+	}
+	var changed []string
+	for _, f := range []struct {
+		what     string
+		old, new string
+	}{{"地址", old.Server, next.Server}, {"CA", old.CA, next.CA}, {"token", old.Token, next.Token},
+		{"命名空间", old.Namespace, next.Namespace}, {"加入信息", old.JoinURL + old.JoinToken, next.JoinURL + next.JoinToken}} {
+		if f.old != f.new {
+			changed = append(changed, f.what)
+		}
+	}
+	err = s.store.Update(ctx, func(tx *store.Tx) error {
+		if err := tx.UpdateCluster(next); err != nil {
+			return err
+		}
+		return tx.Audit(actor, "cluster.update", c.Name, "换了"+strings.Join(changed, "、")+"；"+next.Server)
+	})
+	if err != nil {
+		return err
+	}
+	s.sites.Add(sites.Site{Name: next.Name, Region: next.Region, Cluster: api})
+	s.log.Info("cluster updated", "cluster", c.Name, "changed", strings.Join(changed, ","), "server", next.Server)
+	return nil
+}
+
+// pullKeyNames are the two names a cluster's pull key takes in turn: a new
+// key gets the one not in use, and the old key goes only once the cluster
+// has the new one, so a failure on the way leaves image pulls working.
+func pullKeyNames(cluster string) [2]string { return [2]string{"pull-" + cluster, "pull2-" + cluster} }
+
+// renewPullKey makes a new pull key for the cluster, writes it into the
+// cluster, and then revokes the one before.
+func (s *Service) renewPullKey(ctx context.Context, api cluster.API, clusterName, actor string) error {
+	keys, err := s.keys.List(ctx)
+	if err != nil {
+		return err
+	}
+	names := pullKeyNames(clusterName)
+	created := map[string]time.Time{}
+	for _, k := range keys {
+		if k.Name == names[0] || k.Name == names[1] {
+			created[k.Name] = k.Created
+		}
+	}
+	// The newest is the one the cluster has; the other name is free, or
+	// holds a key left by a renewal that stopped half way.
+	current, next := names[0], names[1]
+	if _, ok := created[current]; !ok || created[next].After(created[current]) {
+		current, next = next, current
+	}
+	if _, ok := created[next]; ok {
+		if err := s.keys.Revoke(ctx, next, actor); err != nil {
+			return err
+		}
+	}
+	key, err := s.keys.Create(ctx, next, []string{auth.ScopePull}, actor)
+	if err != nil {
+		return err
+	}
+	if err := api.ApplySecret(ctx, cluster.PullSecret(s.host, key)); err != nil {
+		_ = s.keys.Revoke(ctx, next, actor)
+		return refuse("写不进拉取镜像用的 Secret：%v", err)
+	}
+	if _, ok := created[current]; ok {
+		if err := s.keys.Revoke(ctx, current, actor); err != nil {
+			s.log.Error("could not revoke the old pull key", "cluster", clusterName, "key", current, "error", err)
+		}
+	}
+	return nil
+}
+
+// Add connects to a new cluster, gives it a pull key and stores it. Adding
+// a cluster that is already stored with the same server succeeds and changes
+// nothing.
+func (s *Service) Add(ctx context.Context, c Connection, actor string) error {
+	stored, err := checkConnection(c, actor)
+	if err != nil {
+		return err
+	}
 	if old, ok, err := s.Stored(ctx, c.Name); err != nil {
 		return err
 	} else if ok {
@@ -375,14 +549,8 @@ func (s *Service) Add(ctx context.Context, c Connection, actor string) error {
 
 	// Each cluster pulls with its own key, so one can be revoked alone. A
 	// key left from an earlier attempt is replaced.
-	keyName := "pull-" + c.Name
-	_ = s.keys.Revoke(ctx, keyName, actor)
-	key, err := s.keys.Create(ctx, keyName, []string{auth.ScopePull}, actor)
-	if err != nil {
+	if err := s.renewPullKey(ctx, api, c.Name, actor); err != nil {
 		return err
-	}
-	if err := api.ApplySecret(ctx, cluster.PullSecret(s.host, key)); err != nil {
-		return refuse("写不进拉取镜像用的 Secret：%v", err)
 	}
 	if err := s.applyVars(ctx, api); err != nil {
 		return refuse("写不进战斗服的运行时配置：%v", err)
@@ -414,9 +582,17 @@ func (s *Service) JoinCommand(c store.Cluster) string {
 	return fmt.Sprintf("curl -sfL https://%s/install/node.sh | sh -s -- --server %s --token %s", s.host, c.JoinURL, c.JoinToken)
 }
 
-// InstallCommand is what to run on the first machine of a new cluster.
+// InstallCommand is what to run on the first machine of a new cluster, or
+// on the control plane of a cluster that rejoins.
 func (s *Service) InstallCommand(j Join) string {
 	command := fmt.Sprintf("curl -sfL https://%s/install/cluster.sh | sh -s -- --code %s", s.host, j.Code)
+	if j.Rejoin {
+		command += " --rejoin"
+		if j.RotateToken {
+			command += " --rotate-token"
+		}
+		return command
+	}
 	if j.ControlPlaneOnly {
 		command += " --control-plane-only"
 	}

@@ -507,7 +507,9 @@ func (c *Console) renderKeys(w http.ResponseWriter, r *http.Request, p page, sta
 	data.Scopes = auth.Scopes
 	data.PullKeys = map[string]string{}
 	for _, s := range c.sites.All() {
+		// A cluster's pull key takes one of two names in turn.
 		data.PullKeys["pull-"+s.Name] = s.Name
+		data.PullKeys["pull2-"+s.Name] = s.Name
 	}
 	p.Title = "API key"
 	p.Nav = "settings"

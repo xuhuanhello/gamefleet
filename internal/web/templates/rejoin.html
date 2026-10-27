@@ -1,0 +1,30 @@
+{{define "content"}}
+{{- $d := .Data}}
+<header class="head">
+  <div>
+    <div class="crumbs"><a href="/clusters/{{$d.Cluster}}">{{$d.Cluster}}</a><span>/</span><span>重新接入</span></div>
+    <h1>重新接入 {{$d.Cluster}}</h1>
+    <p class="subline">在 {{$d.Cluster}} 的控制面上重新跑一遍安装命令，GameFleet 换上它报来的连接信息。控制面的设置不变，K3s 不重启，正在打的对局不受影响。</p>
+  </div>
+</header>
+{{- if $d.Err}}<p class="error">{{$d.Err}}</p>{{end}}
+<div class="panel">
+  <div class="panel-head"><h2>什么时候用</h2></div>
+  <div class="panel-body">
+    <p>控制面在原来的地址重装过、GameFleet 连不上 {{$d.Cluster}} 了，或者 GameFleet 用的 token 可能泄露了。只是集群暂时连不上（比如防火墙、断网），不需要重新接入。</p>
+  </div>
+</div>
+<div class="panel">
+  <div class="panel-head"><h2>控制面</h2></div>
+  <form class="form-grid narrow" action="/clusters/{{$d.Cluster}}/rejoin" method="post">
+    {{template "machineFields" $d.Form}}
+    <label class="span check"><input type="checkbox" name="rotateToken" value="1"{{if $d.RotateToken}} checked{{end}}>
+      <span>同时换掉 GameFleet 用的 token<span class="muted">：旧的马上作废。怀疑 token 泄露时勾上。从删掉旧 token 到 GameFleet 拿到新 token 的几秒里，{{$d.Cluster}} 分配不了新对局</span></span></label>
+    <div class="span form-actions">
+      <button type="submit" class="primary" name="mode" value="ssh">开始</button>
+      <button type="submit" name="mode" value="manual" formnovalidate>只要命令，我自己执行</button>
+    </div>
+  </form>
+  <p class="hint">机器 IP 填 {{$d.Cluster}} 控制面那台机器的。GameFleet 登录前会先让你核对它的主机指纹。密码和私钥只留在内存里，不写进数据库和日志。</p>
+</div>
+{{end}}

@@ -18,6 +18,8 @@ import (
 type Clusters interface {
 	StartJoin(ctx context.Context, name, region string, controlPlaneOnly bool, actor string) (clusters.Join, error)
 	StartRemoteJoin(ctx context.Context, name, region string, controlPlaneOnly bool, t remote.Target, actor string) (clusters.Join, error)
+	StartRejoin(ctx context.Context, cluster string, rotateToken bool, actor string) (clusters.Join, error)
+	StartRemoteRejoin(ctx context.Context, cluster string, rotateToken bool, t remote.Target, actor string) (clusters.Join, error)
 	RetryJoin(id string) error
 	ConfirmJoin(id, fingerprint string) error
 	CancelJoin(id string) error
@@ -173,6 +175,61 @@ func (c *Console) startJoin(w http.ResponseWriter, r *http.Request, p page) {
 		return
 	}
 	c.log.Info("cluster join started", "user", p.User, "cluster", name, "region", region, "ssh", j.Remote != nil)
+	http.Redirect(w, r, "/clusters/new?join="+j.ID, http.StatusSeeOther)
+}
+
+type rejoinPage struct {
+	Cluster     string
+	Form        machineForm
+	RotateToken bool
+	Err         string
+}
+
+func (c *Console) rejoinPage(w http.ResponseWriter, r *http.Request, p page) {
+	s, ok := c.site(w, r, p)
+	if !ok {
+		return
+	}
+	c.renderRejoin(w, p, http.StatusOK, rejoinPage{Cluster: s.Name})
+}
+
+func (c *Console) renderRejoin(w http.ResponseWriter, p page, status int, data rejoinPage) {
+	p.Title = "重新接入 " + data.Cluster
+	p.Nav = "cluster:" + data.Cluster
+	p.Data = data
+	c.render(w, status, "rejoin", p)
+}
+
+func (c *Console) startRejoin(w http.ResponseWriter, r *http.Request, p page) {
+	s, ok := c.site(w, r, p)
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	rotate := r.PostForm.Get("rotateToken") != ""
+	var j clusters.Join
+	var err error
+	if r.PostForm.Get("mode") == "manual" {
+		j, err = c.clusters.StartRejoin(r.Context(), s.Name, rotate, p.User)
+	} else {
+		j, err = c.clusters.StartRemoteRejoin(r.Context(), s.Name, rotate, target(r), p.User)
+	}
+	var refusal *clusters.Error
+	if errors.As(err, &refusal) {
+		t := target(r)
+		c.renderRejoin(w, p, http.StatusBadRequest, rejoinPage{Cluster: s.Name, Form: machineForm{Host: t.Host, User: t.User},
+			RotateToken: rotate, Err: refusal.Text})
+		return
+	}
+	if err != nil {
+		c.fail(w, p, err)
+		return
+	}
+	c.log.Info("cluster rejoin started", "user", p.User, "cluster", s.Name, "rotateToken", rotate, "ssh", j.Remote != nil)
 	http.Redirect(w, r, "/clusters/new?join="+j.ID, http.StatusSeeOther)
 }
 

@@ -86,9 +86,10 @@ roleRef:
   kind: ClusterRole
   name: gamefleet
 ---
-# A long-lived token for GameFleet, which runs outside the cluster. GameFleet
-# keeps the token it got when the cluster joined, and cannot take a new one
-# yet: deleting this Secret cuts GameFleet off from the cluster.
+# A long-lived token for GameFleet, which runs outside the cluster. To replace
+# it, rejoin the cluster from its console page with a new token: the install
+# script deletes this Secret, which ends the old token, makes a new one and
+# hands it to GameFleet. Deleting the Secret alone cuts GameFleet off.
 apiVersion: v1
 kind: Secret
 metadata:

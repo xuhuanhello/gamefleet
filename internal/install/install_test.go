@@ -176,6 +176,7 @@ func runBlock(t *testing.T, dir, part, setup string, paths ...string) (out, ran 
 	stubs := map[string]string{
 		filepath.Join(bin, "systemctl"):      "systemctl",
 		filepath.Join(bin, "curl"):           "curl",
+		filepath.Join(bin, "kubectl"):        "kubectl",
 		filepath.Join(dir, "k3s-killall.sh"): "k3s-killall.sh",
 	}
 	for path, name := range stubs {
@@ -269,5 +270,55 @@ func TestClusterScriptResumesFromWhatIsThere(t *testing.T) {
 				t.Fatalf("ran %q (printed %q), want %q", ran, out, c.want)
 			}
 		})
+	}
+}
+
+// A rejoin runs only on the control plane of the cluster it names, and keeps
+// that machine's setup: game servers on it or not, as its config says.
+func TestClusterScriptRejoinsAsTheControlPlaneWas(t *testing.T) {
+	srv := serve(t, &joins{})
+	_, script := get(t, srv.URL+"/install/cluster.sh")
+	rejoin := block(t, script, `if [ -n "$rejoin" ]; then`, "fi")
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(dir, "config.yaml")
+	for _, c := range []struct {
+		name, installed, config, want string
+	}{
+		{"not installed", "", "# gamefleet cluster sg-1\n", "fail: 这台机器上没有 GameFleet 装的集群"},
+		{"another cluster", "1", "# gamefleet cluster jp-1\n", "fail: 这台机器装的是别的集群"},
+		{"runs game servers", "1", "# gamefleet cluster sg-1\nnode-label: [\"gamefleet.io/pool=game\", \"gamefleet.io/cluster=sg-1\"]\n", "control_plane_only=."},
+		{"control plane only", "1", "# gamefleet cluster sg-1\nnode-label: [\"gamefleet.io/cluster=sg-1\"]\n", "control_plane_only=1."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := os.WriteFile(config, []byte(c.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The command line said the opposite of what the machine has.
+			setup := "CONFIG=" + config + " name=sg-1 rejoin=1 installed=" + c.installed + " control_plane_only=x"
+			out, _ := runBlock(t, dir, rejoin+"\necho \"control_plane_only=$control_plane_only.\"", setup)
+			if !strings.Contains(out, c.want) {
+				t.Fatalf("got %q, want %q", out, c.want)
+			}
+		})
+	}
+}
+
+// Rotating the token deletes GameFleet's token Secret, which ends the old
+// token, and applies the manifests to make a new one.
+func TestClusterScriptRotatesTheToken(t *testing.T) {
+	srv := serve(t, &joins{})
+	_, script := get(t, srv.URL+"/install/cluster.sh")
+	rotate := block(t, script, `if [ -n "$rotate_token" ]; then`, "fi")
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ran := runBlock(t, dir, rotate, "rotate_token=1 NAMESPACE=agones-games MANIFESTS="+dir)
+	want := "kubectl -n agones-games delete secret gamefleet-token --ignore-not-found\nkubectl apply -f " + dir + "/gamefleet.yaml\n"
+	if ran != want {
+		t.Fatalf("ran %q, want %q", ran, want)
 	}
 }

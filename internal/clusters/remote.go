@@ -209,6 +209,30 @@ func (s *Service) StartRemoteJoin(ctx context.Context, name, region string, cont
 	return j, nil
 }
 
+// StartRemoteRejoin is StartRejoin with GameFleet running the command on the
+// control plane over SSH, once the operator checked its host key.
+func (s *Service) StartRemoteRejoin(ctx context.Context, clusterName string, rotateToken bool, t remote.Target, actor string) (Join, error) {
+	t, err := checkTarget(t)
+	if err != nil {
+		return Join{}, err
+	}
+	r, err := s.checking(ctx, t)
+	if err != nil {
+		return Join{}, err
+	}
+	j, err := s.StartRejoin(ctx, clusterName, rotateToken, actor)
+	if err != nil {
+		return Join{}, err
+	}
+	s.mu.Lock()
+	stored := s.joins[j.ID]
+	stored.target = &t
+	stored.Remote = r
+	j = stored.snapshot()
+	s.mu.Unlock()
+	return j, nil
+}
+
 // ConfirmJoin starts the install once the operator found the machine's host
 // key to be fingerprint, the one GameFleet showed.
 func (s *Service) ConfirmJoin(id, fingerprint string) error {

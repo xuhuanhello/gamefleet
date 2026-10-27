@@ -29,14 +29,18 @@
 <header class="head">
   <div>
     <div class="crumbs"><a href="/">总览</a><span>/</span><a href="/clusters/new">接入集群</a><span>/</span><span>{{$j.Name}}</span></div>
-    <h1>接入 {{$j.Name}}</h1>
+    <h1>{{if $j.Rejoin}}重新接入{{else}}接入{{end}} {{$j.Name}}</h1>
     <p class="subline">地区 {{$j.Region}}{{if $j.ControlPlaneOnly}} · 只做控制面{{end}}
       {{- if $j.Remote}} · GameFleet 通过 SSH 在 <span class="mono">{{$j.Remote.User}}@{{$j.Remote.Host}}</span> 上安装{{else if $j.IP}} · 新机器 <span class="mono">{{$j.IP}}</span>{{end}}
       {{- if and (ne $j.Stage "done") (not $d.Expired)}} · 加入码 {{until $j.Expires}}过期{{end}}</p>
   </div>
   {{- if .Refresh}}<span class="live-note">每 3 秒更新</span>{{end}}
 </header>
-{{- if eq $j.Stage "done"}}
+{{- if and (eq $j.Stage "done") $j.Rejoin}}
+<p class="finding ok"><span class="dot"></span><span class="text">{{$j.Name}} 已经重新接入，GameFleet 用上了新的连接信息{{if $j.RotateToken}}和新的 token{{end}}。</span></p>
+{{- if $j.Message}}<p class="finding warn"><span class="dot"></span><span class="text">{{$j.Message}}</span></p>{{end}}
+<div class="actions"><a class="button primary" href="/clusters/{{$j.Name}}">打开 {{$j.Name}}</a></div>
+{{- else if eq $j.Stage "done"}}
 {{- if $j.ControlPlaneOnly}}
 <p class="finding ok"><span class="dot"></span><span class="text">{{$j.Name}} 已经接入。这台机器只做控制面，下一步：给 {{$j.Name}} 加一台跑战斗服的机器，再在构建页把要用的构建部署到 {{$j.Name}}。</span></p>
 <div class="actions"><a class="button primary" href="/clusters/{{$j.Name}}/nodes/new">加机器</a><a class="button" href="/clusters/{{$j.Name}}">打开 {{$j.Name}}</a></div>

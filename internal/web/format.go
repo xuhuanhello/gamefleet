@@ -178,6 +178,7 @@ var actionLabels = map[string]string{
 	"gamefleet.apply":    "更新 GameFleet",
 	"node.rename":        "机器改名",
 	"cluster.add":        "接入集群",
+	"cluster.update":     "重新接入集群",
 	"node.retire":        "下线机器",
 	"node.keep":          "取消下线",
 	"node.remove":        "删除机器",

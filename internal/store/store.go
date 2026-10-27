@@ -585,6 +585,13 @@ func (t *Tx) InsertCluster(c Cluster) (Cluster, error) {
 	return c, nil
 }
 
+// UpdateCluster replaces how GameFleet reaches a stored cluster: its server,
+// CA, token, namespace and what new machines join with.
+func (t *Tx) UpdateCluster(c Cluster) error {
+	return expectOne(t.tx.ExecContext(t.ctx, `UPDATE clusters SET server = ?, ca = ?, token = ?, namespace = ?, join_url = ?, join_token = ?
+		WHERE name = ?`, c.Server, c.CA, c.Token, c.Namespace, c.JoinURL, c.JoinToken, c.Name))
+}
+
 func scanCluster(row scanner) (Cluster, error) {
 	var c Cluster
 	var created int64

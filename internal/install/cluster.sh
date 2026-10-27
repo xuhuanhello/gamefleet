@@ -22,12 +22,16 @@ MIN_PORT={{.MinPort}}
 MAX_PORT={{.MaxPort}}
 CONFIG=/etc/rancher/k3s/config.yaml
 
-code='' public_ip='' control_plane_only=''
+code='' public_ip='' control_plane_only='' rejoin='' rotate_token=''
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--code) code=$2; shift 2 ;;
 	--public-ip) public_ip=$2; shift 2 ;;
 	--control-plane-only) control_plane_only=1; shift ;;
+	# Run again on the control plane of a cluster GameFleet has, to give
+	# GameFleet a new connection; with --rotate-token, a new token too.
+	--rejoin) rejoin=1; shift ;;
+	--rotate-token) rotate_token=1; shift ;;
 	*) echo "不认识的参数 $1" >&2; exit 2 ;;
 	esac
 done
@@ -90,6 +94,15 @@ if grep -q '^# gamefleet cluster' "$CONFIG" 2>/dev/null; then
 	fi
 else
 	[ ! -e /usr/local/bin/k3s ] || fail "这台机器已经装了别的 K3s，请先执行 k3s-uninstall.sh"
+fi
+# A rejoin keeps the control plane as it is: the same cluster, and game
+# servers on it or not as before, so that K3s keeps its config and does not
+# restart.
+if [ -n "$rejoin" ]; then
+	[ -n "$installed" ] || fail "这台机器上没有 GameFleet 装的集群：重新接入要在原来的控制面上执行"
+	grep -qx "# gamefleet cluster $name" "$CONFIG" || fail "这台机器装的是别的集群，不是 $name"
+	control_plane_only=''
+	grep -q 'gamefleet.io/pool=game' "$CONFIG" || control_plane_only=1
 fi
 
 # K3s applies every file in this directory when it starts and again when one
@@ -367,6 +380,14 @@ while :; do
 	sleep 5
 done
 rm -f /tmp/gamefleet-pulled /tmp/gamefleet-pulled-now
+# A new token ends the old one: Kubernetes stops taking a token once its
+# Secret is gone. GameFleet is cut off from the cluster until it has the new
+# one, which this script reports next.
+if [ -n "$rotate_token" ]; then
+	say "换掉 GameFleet 用的 token，旧的马上作废"
+	kubectl -n "$NAMESPACE" delete secret gamefleet-token --ignore-not-found >/dev/null || fail "删不掉旧的 token"
+	kubectl apply -f "$MANIFESTS/gamefleet.yaml" >/dev/null || fail "建不了新的 token"
+fi
 token_ready() { [ -n "$(kubectl -n "$NAMESPACE" get secret gamefleet-token -o jsonpath='{.data.token}')" ]; }
 wait_for " GameFleet 的账号" token_ready
 
