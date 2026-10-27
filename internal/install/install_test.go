@@ -138,3 +138,103 @@ func TestIPAndReports(t *testing.T) {
 		t.Errorf("not json: %d", status)
 	}
 }
+
+// block returns the lines of script from the one that is first, up to and
+// including the first line after it that is last.
+func block(t *testing.T, script, first, last string) string {
+	t.Helper()
+	lines := strings.Split(script, "\n")
+	for i, l := range lines {
+		if l != first {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			if lines[j] == last {
+				return strings.Join(lines[i:j+1], "\n")
+			}
+		}
+	}
+	t.Fatalf("cluster.sh has no block from %q to %q", first, last)
+	return ""
+}
+
+// runBlock runs part of cluster.sh with its helpers stubbed, and the commands
+// it runs recorded. It returns what the part printed and what it ran.
+func runBlock(t *testing.T, part, setup string) (out, ran string) {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "ran")
+	bin := filepath.Join(dir, "bin")
+	os.Mkdir(bin, 0o755)
+	for _, name := range []string{"systemctl", "curl"} {
+		stub := "#!/bin/sh\necho \"" + name + " $*\" >>" + log + "\n"
+		if name == "curl" {
+			stub += "exit 1\n" // no download: the install stops there
+		}
+		os.WriteFile(filepath.Join(bin, name), []byte(stub), 0o755)
+	}
+	script := "set -u\nsay() { :; }\nstatus() { :; }\nfail() { echo \"fail: $*\"; exit 1; }\nK3S_VERSION=v0\n" +
+		setup + "\n" + part + "\necho \"configured=${configured:-} installed=${installed:-}\"\n"
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	b, _ := cmd.CombinedOutput()
+	r, _ := os.ReadFile(log)
+	return string(b), string(r)
+}
+
+// A retry of the control plane install goes on from what is really there: a
+// config written by an earlier run is not K3s installed, and K3s installed is
+// not K3s started.
+func TestClusterScriptResumesFromWhatIsThere(t *testing.T) {
+	srv := serve(t, &joins{})
+	_, script := get(t, srv.URL+"/install/cluster.sh")
+	dir := t.TempDir()
+	k3s, unit, config := filepath.Join(dir, "k3s"), filepath.Join(dir, "k3s.service"), filepath.Join(dir, "config.yaml")
+	detect := block(t, script, "configured='' installed=''", "fi")
+	detect = strings.NewReplacer("/usr/local/bin/k3s", k3s, "/etc/systemd/system/k3s.service", unit).Replace(detect)
+	setup := "CONFIG=" + config
+	cases := []struct {
+		name                    string
+		marked, binary, service bool
+		want                    string
+	}{
+		{"fresh machine", false, false, false, "configured= installed="},
+		{"config written, K3s not downloaded", true, false, false, "configured=1 installed="},
+		{"K3s downloaded, service not made", true, true, false, "configured=1 installed="},
+		{"K3s installed", true, true, true, "configured=1 installed=1"},
+		{"another K3s", false, true, true, "fail: 这台机器已经装了别的 K3s"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, f := range []string{k3s, unit, config} {
+				os.Remove(f)
+			}
+			if c.marked {
+				os.WriteFile(config, []byte("# gamefleet cluster sg-1\n"), 0o600)
+			}
+			if c.binary {
+				os.WriteFile(k3s, []byte("#!/bin/sh\n"), 0o755)
+			}
+			if c.service {
+				os.WriteFile(unit, []byte("[Unit]\n"), 0o644)
+			}
+			if out, _ := runBlock(t, detect, setup); !strings.Contains(out, c.want) {
+				t.Fatalf("got %q, want %q", out, c.want)
+			}
+		})
+	}
+
+	start := block(t, script, `if [ -z "$installed" ]; then`, "fi")
+	for _, c := range []struct{ name, setup, want string }{
+		{"not installed", "installed='' config_changed=''", "curl -sfL --max-time 60 https://get.k3s.io"},
+		{"config changed", "installed=1 config_changed=1", "systemctl start --no-block k3s"},
+		// An earlier run may have stopped before it started K3s.
+		{"config unchanged", "installed=1 config_changed=''", "systemctl start --no-block k3s"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if out, ran := runBlock(t, start, c.setup); !strings.Contains(ran, c.want) {
+				t.Fatalf("ran %q (printed %q), want %q", ran, out, c.want)
+			}
+		})
+	}
+}
