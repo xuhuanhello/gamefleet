@@ -318,15 +318,42 @@ func TestRetryFindsTheRoomAfterItsRouteIsGone(t *testing.T) {
 	}
 }
 
+// meeting holds the first lookup of a match until a second one arrives, or
+// for a while: requests that overlap both look before either allocates,
+// unless something keeps them apart.
+type meeting struct {
+	*clustertest.Fake
+	mu     sync.Mutex
+	looks  int
+	second chan struct{}
+}
+
+func (m *meeting) FindByMatch(ctx context.Context, matchID string) (*cluster.Room, error) {
+	m.mu.Lock()
+	m.looks++
+	n := m.looks
+	m.mu.Unlock()
+	switch n {
+	case 1:
+		select {
+		case <-m.second:
+		case <-time.After(300 * time.Millisecond):
+		}
+	case 2:
+		close(m.second)
+	}
+	return m.Fake.FindByMatch(ctx, matchID)
+}
+
 // Requests for one match that overlap, such as a retry sent while a slow
-// first request still runs, all get the same room.
+// first request still runs, get the same room.
 func TestOverlappingRequestsForOneMatchShareTheRoom(t *testing.T) {
-	svc := newService(t, clustertest.New("us-1", 8), clustertest.New("sg-1", 0))
-	const n = 8
-	results := make([]Result, n)
-	errs := make([]error, n)
+	svc := newService(t, clustertest.New("us-1", 0), clustertest.New("sg-1", 0))
+	svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &meeting{Fake: clustertest.New("us-1", 8), second: make(chan struct{})}})
+	var results [2]Result
+	var errs [2]error
 	var wg sync.WaitGroup
-	for i := range n {
+	for i := range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -334,19 +361,12 @@ func TestOverlappingRequestsForOneMatchShareTheRoom(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	created := 0
-	for i := range n {
+	for i := range 2 {
 		if errs[i] != nil {
 			t.Fatalf("request %d: %v", i, errs[i])
 		}
-		if results[i].Room.ID != results[0].Room.ID {
-			t.Fatalf("request %d got room %s, request 0 got %s", i, results[i].Room.ID, results[0].Room.ID)
-		}
-		if results[i].Created {
-			created++
-		}
 	}
-	if created != 1 {
-		t.Fatalf("%d requests allocated the match, want 1", created)
+	if results[0].Room.ID != results[1].Room.ID || results[0].Created == results[1].Created {
+		t.Fatalf("results = %+v; want one room, allocated once", results)
 	}
 }

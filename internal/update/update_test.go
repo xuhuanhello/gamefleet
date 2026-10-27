@@ -206,23 +206,45 @@ func TestDownloadAndApplyWriteRequests(t *testing.T) {
 	}
 }
 
-// Requests sent at the same time, from two tabs say, get one through.
+// Requests sent at the same time, from two tabs say, get one through. The
+// first to pass the check that the updater is idle waits there for the second
+// to pass it too, or for a while: both pass unless something keeps them apart.
 func TestOneRequestAtATime(t *testing.T) {
 	s, _ := newService(t, "2.0.0", "")
-	const n = 20
-	errs := make(chan error, n)
+	var mu sync.Mutex
+	passed := 0
+	second := make(chan struct{})
+	now := s.now
+	// The request is stamped with the time after the check, before it is
+	// written.
+	s.now = func() time.Time {
+		mu.Lock()
+		passed++
+		n := passed
+		mu.Unlock()
+		switch n {
+		case 1:
+			select {
+			case <-second:
+			case <-time.After(300 * time.Millisecond):
+			}
+		case 2:
+			close(second)
+		}
+		return now()
+	}
+	var errs [2]error
 	var wg sync.WaitGroup
-	for range n {
+	for i := range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- s.Download("2.1.0")
+			errs[i] = s.Download("2.1.0")
 		}()
 	}
 	wg.Wait()
-	close(errs)
 	accepted := 0
-	for err := range errs {
+	for _, err := range errs {
 		switch {
 		case err == nil:
 			accepted++
