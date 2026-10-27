@@ -704,3 +704,37 @@ func TestRouteWaitsForReadyGameServers(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Only a game server that allocation can give a match to makes a build
+// ready: not a Ready one taken out of allocation, not a full one, and none
+// of a Fleet being deleted.
+func TestWhatMakesABuildReady(t *testing.T) {
+	d := store.Deployment{ID: 1, Fleet: "billiards-1-abcd"}
+	fleet := func(ready int, deleting bool) []cluster.ManagedFleet {
+		return []cluster.ManagedFleet{{Name: d.Fleet, Deployment: d.ID, Ready: ready, Deleting: deleting}}
+	}
+	retiringReady := cluster.Room{ID: "a", Fleet: d.Fleet, State: "Ready", Retiring: true, Capacity: 50}
+	full := cluster.Room{ID: "b", Fleet: d.Fleet, State: "Allocated", Capacity: 1, Matches: []cluster.Match{{ID: "m-1"}}}
+	withRoom := cluster.Room{ID: "c", Fleet: d.Fleet, State: "Allocated", Capacity: 2, Matches: []cluster.Match{{ID: "m-1"}}}
+	retiringWithRoom := withRoom
+	retiringWithRoom.Retiring = true
+	cases := map[string]struct {
+		fleets []cluster.ManagedFleet
+		rooms  []cluster.Room
+		want   bool
+	}{
+		"a ready game server":              {fleet(1, false), nil, true},
+		"no Fleet yet":                     {nil, nil, false},
+		"ready ones all out of allocation": {fleet(1, false), []cluster.Room{retiringReady}, false},
+		"full ones only":                   {fleet(0, false), []cluster.Room{full}, false},
+		"a running one with room":          {fleet(0, false), []cluster.Room{full, withRoom}, true},
+		"room only out of allocation":      {fleet(0, false), []cluster.Room{retiringWithRoom}, false},
+		"a Fleet being deleted":            {fleet(3, true), nil, false},
+		"another Fleet's game servers":     {fleet(0, false), []cluster.Room{{ID: "x", Fleet: "other", State: "Allocated", Capacity: 2}}, false},
+	}
+	for name, c := range cases {
+		if got := canTakeAMatch(d, c.fleets, c.rooms); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+}

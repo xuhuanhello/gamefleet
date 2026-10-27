@@ -338,6 +338,30 @@ func (s *Service) undeployable(d store.Deployment) error {
 	return nil
 }
 
+// canTakeAMatch reports whether the deployment's Fleet has a game server
+// that allocation can give a match to: a Ready one not taken out of
+// allocation, or a running one with room left. A Fleet being deleted has
+// none.
+func canTakeAMatch(d store.Deployment, fleets []cluster.ManagedFleet, rooms []cluster.Room) bool {
+	ready := 0
+	for _, f := range fleets {
+		if owns(d, f) && !f.Deleting {
+			ready = f.Ready
+		}
+	}
+	for _, r := range rooms {
+		switch {
+		case r.Fleet != d.Fleet:
+		case r.State == "Ready" && r.Retiring:
+			// Counted Ready by its Fleet, but allocation passes it by.
+			ready--
+		case r.State == "Allocated" && !r.Retiring && r.Free() > 0:
+			return true
+		}
+	}
+	return ready > 0
+}
+
 // maxFleetName is the longest Fleet name: Agones puts it in a label value.
 const maxFleetName = 63
 
@@ -428,16 +452,14 @@ func (s *Service) ready(ctx context.Context, buildID int64) error {
 			continue
 		}
 		fleets, err := site.Cluster.ManagedFleets(ctx)
+		var rooms []cluster.Room
+		if err == nil {
+			rooms, err = site.Cluster.Rooms(ctx)
+		}
 		if err != nil {
 			return &Error{ErrNotReady, fmt.Sprintf("读不到 %s 上的战斗服，没法确认 %s 在那里能接新局：%v", d.Cluster, buildName(b), err)}
 		}
-		ready := false
-		for _, f := range fleets {
-			if owns(d, f) && f.Ready+f.Allocated > 0 {
-				ready = true
-			}
-		}
-		if !ready {
+		if !canTakeAMatch(d, fleets, rooms) {
 			waiting = append(waiting, d.Cluster)
 		}
 	}
