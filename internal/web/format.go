@@ -166,6 +166,7 @@ var actionLabels = map[string]string{
 	"deployment.delete":  "删除部署",
 	"deployment.reclaim": "自动回收",
 	"deployment.buffer":  "改空闲数",
+	"deployment.scale":   "改局数和空闲数",
 	"route.set":          "设置路由",
 	"route.promote":      "晋升",
 	"route.rollback":     "回滚",

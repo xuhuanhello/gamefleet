@@ -241,8 +241,8 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest, actor string) (
 			return invalid("游戏名 %s 太长：Fleet 名 %s 超过了 %d 个字符", b.Game, fleet, maxFleetName)
 		}
 		d, err = tx.InsertDeployment(store.Deployment{
-			BuildID: b.ID, Cluster: req.Cluster, Fleet: fleet,
-			Buffer: req.Buffer, MaxReplicas: req.MaxReplicas, Rooms: req.Rooms, Resources: r, State: state, CreatedBy: actor,
+			BuildID: b.ID, Cluster: req.Cluster, Fleet: fleet, Buffer: req.Buffer, MaxReplicas: req.MaxReplicas,
+			Rooms: req.Rooms, RoomsCapacity: cluster.MaxRooms, Resources: r, State: state, CreatedBy: actor,
 		})
 		if errors.Is(err, store.ErrDuplicate) {
 			return conflict("%s 已经部署在 %s 了", buildName(b), req.Cluster)
@@ -354,7 +354,7 @@ func canTakeAMatch(d store.Deployment, fleets []cluster.ManagedFleet, rooms []cl
 		case r.State == "Ready" && r.Retiring:
 			// Counted Ready by its Fleet, but allocation passes it by.
 			ready--
-		case r.State == "Allocated" && !r.Retiring && r.Free() > 0:
+		case r.State == "Allocated" && !r.Retiring && r.Limited(d.Rooms).Free() > 0:
 			return true
 		}
 	}
@@ -386,8 +386,11 @@ func owns(d store.Deployment, f cluster.ManagedFleet) bool {
 	return f.Name == d.Fleet && f.Deployment == d.ID
 }
 
-// SetBuffer changes how many idle game servers a deployment keeps.
-func (s *Service) SetBuffer(ctx context.Context, id int64, buffer, maxReplicas int, actor string) error {
+// SetScale changes how many matches each of a deployment's game servers
+// runs, how many idle game servers it keeps, and how many it may have. A
+// change to the matches applies to the next allocation: game servers that
+// run more than the new number keep their matches and take no new ones.
+func (s *Service) SetScale(ctx context.Context, id int64, rooms, buffer, maxReplicas int, actor string) error {
 	if buffer < 1 || buffer > 50 || maxReplicas < buffer || maxReplicas > 500 {
 		return invalid("空闲战斗服要在 1 到 50 个之间，上限不小于空闲数，最多 500")
 	}
@@ -399,11 +402,18 @@ func (s *Service) SetBuffer(ctx context.Context, id int64, buffer, maxReplicas i
 		if d.State == store.StateDeleted {
 			return conflict("这个部署已经删除了")
 		}
-		if err := tx.SetDeploymentBuffer(id, buffer, maxReplicas); err != nil {
+		if rooms < 1 || rooms > d.RoomsCapacity {
+			if d.RoomsCapacity < cluster.MaxRooms {
+				return invalid("每个战斗服的局数要在 1 到 %d 之间：这个部署是旧版 GameFleet 做的，它的战斗服最多跑 %d 局。要更多，部署一个新构建", d.RoomsCapacity, d.RoomsCapacity)
+			}
+			return invalid("每个战斗服的局数要在 1 到 %d 之间", d.RoomsCapacity)
+		}
+		if err := tx.SetDeploymentScale(id, rooms, buffer, maxReplicas); err != nil {
 			return err
 		}
-		return tx.Audit(actor, "deployment.buffer", d.Fleet+" @ "+d.Cluster,
-			fmt.Sprintf("保持 %d 个空闲，最多 %d 个（原来 %d、%d）", buffer, maxReplicas, d.Buffer, d.MaxReplicas))
+		return tx.Audit(actor, "deployment.scale", d.Fleet+" @ "+d.Cluster,
+			fmt.Sprintf("每个战斗服 %d 局，保持 %d 个空闲，最多 %d 个（原来 %d、%d、%d）",
+				rooms, buffer, maxReplicas, d.Rooms, d.Buffer, d.MaxReplicas))
 	})
 	if err == nil {
 		s.Kick()
@@ -675,6 +685,9 @@ type Target struct {
 	Cluster string
 	Fleet   string
 	Build   int64
+	// How many matches a game server of the Fleet may run, and the capacity
+	// of its rooms list, see cluster.Allocation.
+	Rooms, RoomsCapacity int
 }
 
 // Resolve finds the Fleet for a new match.
@@ -694,7 +707,7 @@ func (s *Service) Resolve(ctx context.Context, game, channel, compat, region str
 		}
 		for _, d := range live {
 			if site, ok := s.site(d.Cluster); ok && site.Region == region {
-				t = Target{Cluster: d.Cluster, Fleet: d.Fleet, Build: d.BuildID}
+				t = Target{Cluster: d.Cluster, Fleet: d.Fleet, Build: d.BuildID, Rooms: d.Rooms, RoomsCapacity: d.RoomsCapacity}
 				return nil
 			}
 		}

@@ -121,6 +121,15 @@ func (r Room) Match(id string) (Match, bool) {
 // Free is how many more matches the game server can take.
 func (r Room) Free() int { return max(0, r.Capacity-len(r.Matches)) }
 
+// Limited is the game server as allocation sees it when its deployment lets
+// each game server run rooms matches: its Capacity is at most rooms.
+func (r Room) Limited(rooms int) Room {
+	if rooms > 0 && rooms < r.Capacity {
+		r.Capacity = rooms
+	}
+	return r
+}
+
 // Kubernetes keeps all the annotations of an object under 256 KiB, and a
 // game server carries a note for each match it runs, one for each that is
 // over until the loop forgets it, and one for each it is asked to end. So a
@@ -155,7 +164,16 @@ type Allocation struct {
 	Channel string
 	Compat  string
 	Players json.RawMessage
+	// Rooms is how many matches a game server of the Fleet may run, at most
+	// RoomsCapacity, the capacity of its rooms list.
+	Rooms, RoomsCapacity int
 }
+
+// MinAvailable is how many places a game server's rooms list must have left
+// to take the match: one, and as many more as the list holds beyond Rooms.
+// Agones counts what is left of the list's capacity, which is fixed for the
+// Fleet's life; this keeps Rooms a setting that applies at once.
+func (a Allocation) MinAvailable() int { return max(1, a.RoomsCapacity-a.Rooms+1) }
 
 // Client talks to one cluster.
 type Client struct {
@@ -195,8 +213,8 @@ func Connect(name, server string, ca []byte, token, namespace string) (*Client, 
 }
 
 // Allocate gives the match a place on one of the Fleet's game servers: one
-// that already runs matches and has room, the fullest first so that idle
-// game servers stay idle, otherwise a Ready one. It adds the match ID to the
+// that already runs matches, fewer than a.Rooms, the fullest first so that
+// idle game servers stay idle, otherwise a Ready one. It adds the match ID to the
 // game server's rooms list and notes the match's players on it. Agones
 // changes the list atomically, so two matches never take the same place.
 func (c *Client) Allocate(ctx context.Context, a Allocation) (Room, error) {
@@ -209,7 +227,7 @@ func (c *Client) Allocate(ctx context.Context, a Allocation) (Room, error) {
 			"matchLabels":      map[string]string{labelFleet: a.Fleet},
 			"matchExpressions": []any{map[string]any{"key": LabelRetiring, "operator": "DoesNotExist"}},
 			"gameServerState":  state,
-			"lists":            map[string]any{ListRooms: map[string]any{"minAvailable": 1}},
+			"lists":            map[string]any{ListRooms: map[string]any{"minAvailable": a.MinAvailable()}},
 		}
 	}
 	request := map[string]any{

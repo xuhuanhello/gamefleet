@@ -255,6 +255,30 @@ func TestMatchesShareAGameServerUntilItIsFull(t *testing.T) {
 	}
 }
 
+// A deployment's game servers take as many matches as it lets them, which
+// may be fewer than their rooms lists hold.
+func TestAGameServerTakesTheMatchesItsDeploymentAllows(t *testing.T) {
+	us := clustertest.New("us-1", 2)
+	us.SetCapacity(cluster.MaxRooms)
+	svc := New(routes{
+		"billiards stable " + compat + " us": {Cluster: "us-1", Fleet: "billiards-142", Build: 142, Rooms: 2, RoomsCapacity: cluster.MaxRooms},
+	}, sites.New(sites.Site{Name: "us-1", Region: "us", Cluster: us}))
+	svc.retryWait, svc.capacityWait = 0, 0
+	ctx := context.Background()
+
+	var servers []string
+	for _, id := range []string{"m-1", "m-2", "m-3"} {
+		result, err := svc.Allocate(ctx, request(id, "us", "stable"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		servers = append(servers, result.Room.ID)
+	}
+	if servers[0] != servers[1] || servers[2] == servers[0] {
+		t.Fatalf("game servers = %v, want two matches on the first and the third on another", servers)
+	}
+}
+
 // overlapping counts the allocations that run at the same time.
 type overlapping struct {
 	*clustertest.Fake

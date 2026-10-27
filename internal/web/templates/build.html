@@ -16,7 +16,7 @@
   <div class="panel">
     <div class="scroll">
     <table>
-      <thead><tr><th>集群</th><th>状态</th><th class="num">对局</th><th class="num">还能开</th><th>保持空闲战斗服</th><th>资源</th><th></th></tr></thead>
+      <thead><tr><th>集群</th><th>状态</th><th class="num">对局</th><th class="num">还能开</th><th>设置</th><th></th></tr></thead>
       <tbody>
       {{- range .Data.Deployments}}
         <tr>
@@ -30,18 +30,19 @@
           </td>
           <td class="num">{{if .Live}}{{.Playing}}{{else}}<span class="muted">–</span>{{end}}</td>
           <td class="num">{{if .Live}}{{.Free}}{{else}}<span class="muted">–</span>{{end}}</td>
-          <td>
-          {{- if eq .State "draining"}}<span class="muted">不再保持</span>
+          <td class="two">
+          {{- if eq .State "draining"}}<span class="muted">每服 {{.Rooms}} 局，不再保持空闲</span>
           {{- else}}
-            <form class="inline" action="/deployments/{{.ID}}/buffer" method="post">
+            <form class="inline" action="/deployments/{{.ID}}/scale" method="post">
               <input type="hidden" name="back" value="/builds/{{.BuildID}}">
+              <label title="每个战斗服最多同时跑几局，最多 {{.RoomsCapacity}}">每服局数 <input type="number" name="rooms" value="{{.Rooms}}" min="1" max="{{.RoomsCapacity}}" required></label>
               <label>空闲 <input type="number" name="buffer" value="{{.Buffer}}" min="1" max="50" required></label>
               <label>上限 <input type="number" name="max" value="{{.MaxReplicas}}" min="1" max="500" required></label>
               <button type="submit" class="quiet">保存</button>
             </form>
           {{- end}}
+            <div class="sub">CPU {{.Resources.CPURequest}}–{{.Resources.CPULimit}}m · 内存 {{.Resources.MemoryRequest}}–{{.Resources.MemoryLimit}} MiB</div>
           </td>
-          <td class="two">每个战斗服 {{.Rooms}} 局<div class="sub">CPU {{.Resources.CPURequest}}–{{.Resources.CPULimit}}m · 内存 {{.Resources.MemoryRequest}}–{{.Resources.MemoryLimit}} MiB</div></td>
           <td class="num">
           {{- if and (ne .State "serving") (eq .Playing 0)}}
             <form action="/deployments/{{.ID}}/delete" method="post" data-confirm="删除 {{.Cluster}} 上的 {{.Deployment.Fleet}}？它的空闲战斗服会一起删掉。">
@@ -52,7 +53,7 @@
           </td>
         </tr>
       {{- else}}
-        <tr><td colspan="7" class="empty">还没有部署在任何集群。</td></tr>
+        <tr><td colspan="6" class="empty">还没有部署在任何集群。</td></tr>
       {{- end}}
       </tbody>
     </table>

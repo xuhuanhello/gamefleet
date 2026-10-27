@@ -334,7 +334,7 @@ select {
 }
 select:hover { border-color: var(--ink-3); }
 select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
-form.inline { display: inline-flex; align-items: center; gap: 10px; }
+form.inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
 form.inline label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); }
 form.inline input { width: 64px; height: 30px; padding: 0 8px; }
 label.check, .form-grid label.check { flex-direction: row; align-items: flex-start; gap: 10px; color: var(--ink); }

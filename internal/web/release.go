@@ -23,7 +23,7 @@ import (
 type Releases interface {
 	Deploy(ctx context.Context, req release.DeployRequest, actor string) (store.Deployment, error)
 	Undeploy(ctx context.Context, id int64, actor string) error
-	SetBuffer(ctx context.Context, id int64, buffer, maxReplicas int, actor string) error
+	SetScale(ctx context.Context, id int64, rooms, buffer, maxReplicas int, actor string) error
 	DefaultsFor(ctx context.Context, game, cluster string) (store.Deployment, error)
 	SetRoute(ctx context.Context, channel string, buildID int64, actor string, force bool) error
 	Promote(ctx context.Context, game, compat, actor string, force bool) error
@@ -373,10 +373,10 @@ func (c *Console) undeploy(w http.ResponseWriter, r *http.Request, p page) {
 	})
 }
 
-func (c *Console) setBuffer(w http.ResponseWriter, r *http.Request, p page) {
+func (c *Console) setScale(w http.ResponseWriter, r *http.Request, p page) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	c.act(w, r, p, "/builds", func(ctx context.Context, f formValues) error {
-		return c.releases.SetBuffer(ctx, id, f.number("buffer"), f.number("max"), p.User)
+		return c.releases.SetScale(ctx, id, f.number("rooms"), f.number("buffer"), f.number("max"), p.User)
 	})
 }
 

@@ -1,6 +1,6 @@
 # 战斗服约定
 
-战斗服是你的游戏服务端，打成镜像后由 Agones 运行，一个进程同时跑多局。用什么引擎都可以，只要遵守下面的约定。它通过 [Agones SDK](https://agones.dev/site/docs/guides/client-sdks/) 和集群打交道，和 GameFleet 没有直接往来。
+战斗服是你的游戏服务端，打成镜像后由 Agones 运行，一个进程可以同时跑多局，最多几局在部署里设；一局一个进程的游戏设成 1。用什么引擎都可以，只要遵守下面的约定。它通过 [Agones SDK](https://agones.dev/site/docs/guides/client-sdks/) 和集群打交道，和 GameFleet 没有直接往来。
 
 ## 镜像
 
@@ -25,7 +25,7 @@
               结果交给你的游戏后端 ──▶ 从 rooms 里删掉这个 matchId，空出位置
 ```
 
-1. **启动：** 加载完成后调用 SDK 的 `Ready()`。从 GameServer 的列表 `rooms` 的容量读出自己最多跑几局（部署时设置，默认 50）。之后它是一个"空闲"的战斗服。
+1. **启动：** 加载完成后调用 SDK 的 `Ready()`。之后它是一个"空闲"的战斗服。最多跑几局由 GameFleet 在分配时把关，战斗服不用知道；列表 `rooms` 的容量是 GameFleet 允许的最大值 80，不是部署设的局数。
 2. **分到一局：** 你的匹配服务调用 GameFleet 的分配接口后，Agones 把 matchId 加进某个战斗服的 `rooms`，GameFleet 同时写一条注解 `gamefleet.io/match.<matchId>`。战斗服用 SDK 的 `WatchGameServer` 看到新的注解，就为这一局开一个房间。注解的内容：
 
    ```json
@@ -60,7 +60,7 @@ GM 工具可以调用 GameFleet 的 `POST /api/v1/matches/{matchId}/end`，提�
 
 | 键 | 类型 | 内容 |
 |---|---|---|
-| `rooms` | Agones 列表 | 正在跑的对局的 matchId，容量是最多跑几局 |
+| `rooms` | Agones 列表 | 正在跑的对局的 matchId。容量固定是 80，部署设的局数不在这里 |
 | `gamefleet.io/match.<matchId>` | 注解 | 这一局的玩家、通道、联机版本和分配时间。对局从 `rooms` 里删掉以后，GameFleet 在 15 秒内清掉它 |
 | `gamefleet.io/end.<matchId>` | 注解 | 要求结束这一局的时间，和上一项一起清掉 |
 | `gamefleet.io/game` | 标签 | 游戏名 |

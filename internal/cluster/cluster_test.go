@@ -54,6 +54,7 @@ func TestAllocateAddsTheMatchToAGameServerWithRoom(t *testing.T) {
 	players := json.RawMessage(`[{"userId":"u-1","seat":0},{"userId":"u-2","seat":1}]`)
 	room, err := client.Allocate(context.Background(), Allocation{
 		Fleet: "billiards-142", MatchID: "m-1", Game: "billiards", Channel: "stable", Compat: "dm-v7", Players: players,
+		Rooms: 50, RoomsCapacity: 80,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -71,13 +72,15 @@ func TestAllocateAddsTheMatchToAGameServerWithRoom(t *testing.T) {
 	if len(selectors) != 2 {
 		t.Fatalf("selectors = %v", selectors)
 	}
-	// Running game servers with room first, then a Ready one; never one on a retiring machine.
+	// Running game servers with room first, then a Ready one; never one on a
+	// retiring machine. Of a list that holds 80, 31 places must be left for
+	// a game server to run fewer than 50 matches.
 	for i, state := range []string{"Allocated", "Ready"} {
 		sel := selectors[i].(map[string]any)
 		rooms := sel["lists"].(map[string]any)[ListRooms].(map[string]any)
 		expr := sel["matchExpressions"].([]any)[0].(map[string]any)
 		if sel["gameServerState"] != state || sel["matchLabels"].(map[string]any)["agones.dev/fleet"] != "billiards-142" ||
-			rooms["minAvailable"] != float64(1) || expr["key"] != LabelRetiring || expr["operator"] != "DoesNotExist" {
+			rooms["minAvailable"] != float64(31) || expr["key"] != LabelRetiring || expr["operator"] != "DoesNotExist" {
 			t.Errorf("selector %d = %v", i, sel)
 		}
 	}

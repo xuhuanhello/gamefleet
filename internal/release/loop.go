@@ -157,7 +157,7 @@ func (s *Service) keepRunning(ctx context.Context, site sites.Site, d store.Depl
 		err := site.Cluster.CreateFleet(ctx, cluster.FleetSpec{
 			Name: d.Fleet, Deployment: d.ID, Build: b.ID, Game: b.Game,
 			Image: s.host + "/" + b.Game + "@" + b.Digest, Port: b.Port, Protocol: b.Protocol,
-			Replicas: d.Buffer, Rooms: d.Rooms, CPURequest: r.CPURequest, CPULimit: r.CPULimit,
+			Replicas: d.Buffer, RoomsCapacity: d.RoomsCapacity, CPURequest: r.CPURequest, CPULimit: r.CPULimit,
 			MemoryRequest: r.MemoryRequest, MemoryLimit: r.MemoryLimit,
 		})
 		if err != nil {

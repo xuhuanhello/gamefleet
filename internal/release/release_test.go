@@ -6,6 +6,8 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,7 +164,7 @@ func TestReleaseLifecycle(t *testing.T) {
 	}
 	f.reconcile(t)
 	fleet, spec, ok := f.us.ManagedFleet(d141.Fleet)
-	if !ok || fleet.Deployment != d141.ID || spec.Image != "fleet.example.com/billiards@sha256:aaa" || spec.Port != 7770 || spec.Replicas != 2 || spec.Rooms != 50 {
+	if !ok || fleet.Deployment != d141.ID || spec.Image != "fleet.example.com/billiards@sha256:aaa" || spec.Port != 7770 || spec.Replicas != 2 || spec.RoomsCapacity != cluster.MaxRooms {
 		t.Fatalf("fleet = %+v, spec = %+v", fleet, spec)
 	}
 	if a, ok := f.us.Autoscaler(d141.Fleet); !ok || a.Buffer != 2 || a.MaxReplicas != 10 {
@@ -718,6 +720,8 @@ func TestWhatMakesABuildReady(t *testing.T) {
 	withRoom := cluster.Room{ID: "c", Fleet: d.Fleet, State: "Allocated", Capacity: 2, Matches: []cluster.Match{{ID: "m-1"}}}
 	retiringWithRoom := withRoom
 	retiringWithRoom.Retiring = true
+	oneEach := d
+	oneEach.Rooms = 1
 	cases := map[string]struct {
 		fleets []cluster.ManagedFleet
 		rooms  []cluster.Room
@@ -738,6 +742,62 @@ func TestWhatMakesABuildReady(t *testing.T) {
 		if got := canTakeAMatch(d, c.fleets, c.rooms); got != c.want {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
 		}
+	}
+	if canTakeAMatch(oneEach, fleet(0, false), []cluster.Room{withRoom}) {
+		t.Error("a game server that runs as many matches as its deployment allows took one more")
+	}
+}
+
+// How many matches each game server runs changes on a deployment that runs,
+// up to what its game servers' rooms lists hold, and the next allocation
+// follows it.
+func TestScaleChangesTheMatchesOfEachGameServer(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	b := f.register(t, "141")
+	d := f.deploy(t, b)
+	if err := f.svc.SetRoute(ctx, Stable, b.ID, "admin", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.SetScale(ctx, d.ID, 80, 3, 12, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	target, err := f.svc.Resolve(ctx, "billiards", Stable, "net7", "us")
+	if err != nil || target.Rooms != 80 || target.RoomsCapacity != cluster.MaxRooms {
+		t.Fatalf("target = %+v, %v", target, err)
+	}
+	if err := f.svc.SetScale(ctx, d.ID, cluster.MaxRooms+1, 3, 12, "admin"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("more than the rooms list holds: %v", err)
+	}
+
+	var entries []store.Entry
+	err = f.store.View(ctx, func(tx *store.Tx) error {
+		entries, err = tx.AuditLog(0, 10)
+		return err
+	})
+	if err != nil || !slices.ContainsFunc(entries, func(e store.Entry) bool {
+		return e.Action == "deployment.scale" && strings.Contains(e.Detail, "每个战斗服 80 局")
+	}) {
+		t.Fatalf("audit log = %+v, %v", entries, err)
+	}
+
+	// A deployment that an earlier GameFleet made holds what it was set to.
+	var old store.Deployment
+	b142 := f.register(t, "142")
+	err = f.store.Update(ctx, func(tx *store.Tx) error {
+		old, err = tx.InsertDeployment(store.Deployment{BuildID: b142.ID, Cluster: "us-1",
+			Fleet: "billiards-2-abcd", Buffer: 1, MaxReplicas: 10, Rooms: 50, RoomsCapacity: 50,
+			Resources: Defaults.Resources, State: store.StateNew})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.SetScale(ctx, old.ID, 60, 1, 10, "admin"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "新构建") {
+		t.Fatalf("more than an earlier deployment holds: %v", err)
+	}
+	if err := f.svc.SetScale(ctx, old.ID, 30, 1, 10, "admin"); err != nil {
+		t.Fatal(err)
 	}
 }
 

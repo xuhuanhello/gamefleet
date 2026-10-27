@@ -83,13 +83,16 @@ type Deployment struct {
 	Fleet       string
 	Buffer      int
 	MaxReplicas int
-	// Rooms is how many matches one game server runs at once.
-	Rooms     int
-	Resources Resources
-	State     string
-	Since     time.Time // when it entered State
-	Created   time.Time
-	CreatedBy string
+	// Rooms is how many matches one game server runs at once. It changes at
+	// any time, up to RoomsCapacity: the capacity of the game servers' rooms
+	// list, fixed when the deployment is made.
+	Rooms         int
+	RoomsCapacity int
+	Resources     Resources
+	State         string
+	Since         time.Time // when it entered State
+	Created       time.Time
+	CreatedBy     string
 }
 
 // Route sends one (game, channel, compat) to a build.
@@ -253,6 +256,12 @@ INSERT OR IGNORE INTO runtime_games (game) SELECT game FROM runtime_vars;
 INSERT OR IGNORE INTO runtime_games (game)
 	SELECT substr(target, 1, instr(target, ' ') - 1) FROM audit_log
 	WHERE action IN ('runtime.set', 'runtime.delete') AND instr(target, ' ') > 1;
+`, `
+-- How many matches a game server runs became a setting that changes at any
+-- time, up to the capacity of the game servers' rooms list, which cannot
+-- change. Deployments made before have the capacity of their setting.
+ALTER TABLE deployments ADD COLUMN rooms_capacity INTEGER NOT NULL DEFAULT 0;
+UPDATE deployments SET rooms_capacity = rooms;
 `}
 
 func (s *Store) migrate() error {
@@ -426,8 +435,8 @@ func scanBuild(row scanner) (Build, error) {
 
 // --- Deployments
 
-const deploymentColumns = `id, build_id, cluster, fleet, buffer, max_replicas, rooms, cpu_request, cpu_limit,
-	memory_request, memory_limit, state, state_since, created_at, created_by`
+const deploymentColumns = `id, build_id, cluster, fleet, buffer, max_replicas, rooms, rooms_capacity, cpu_request,
+	cpu_limit, memory_request, memory_limit, state, state_since, created_at, created_by`
 
 // Deployment returns the deployment with this id.
 func (t *Tx) Deployment(id int64) (Deployment, error) {
@@ -465,10 +474,10 @@ func (t *Tx) InsertDeployment(d Deployment) (Deployment, error) {
 	d.Created, d.Since = t.now, t.now
 	r := d.Resources
 	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO deployments (build_id, cluster, fleet, buffer, max_replicas, rooms,
-		cpu_request, cpu_limit, memory_request, memory_limit, state, state_since, created_at, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.BuildID, d.Cluster, d.Fleet, d.Buffer, d.MaxReplicas, d.Rooms, r.CPURequest, r.CPULimit, r.MemoryRequest, r.MemoryLimit,
-		d.State, millis(d.Since), millis(d.Created), d.CreatedBy)
+		rooms_capacity, cpu_request, cpu_limit, memory_request, memory_limit, state, state_since, created_at, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.BuildID, d.Cluster, d.Fleet, d.Buffer, d.MaxReplicas, d.Rooms, d.RoomsCapacity, r.CPURequest, r.CPULimit,
+		r.MemoryRequest, r.MemoryLimit, d.State, millis(d.Since), millis(d.Created), d.CreatedBy)
 	if err != nil {
 		return Deployment{}, duplicate(err)
 	}
@@ -482,17 +491,18 @@ func (t *Tx) SetDeploymentState(id int64, state string) error {
 		`UPDATE deployments SET state = ?, state_since = ? WHERE id = ?`, state, millis(t.now), id))
 }
 
-// SetDeploymentBuffer changes how many idle game servers it keeps and its ceiling.
-func (t *Tx) SetDeploymentBuffer(id int64, buffer, maxReplicas int) error {
+// SetDeploymentScale changes how many matches each game server runs, how
+// many idle game servers it keeps, and its ceiling.
+func (t *Tx) SetDeploymentScale(id int64, rooms, buffer, maxReplicas int) error {
 	return expectOne(t.tx.ExecContext(t.ctx,
-		`UPDATE deployments SET buffer = ?, max_replicas = ? WHERE id = ?`, buffer, maxReplicas, id))
+		`UPDATE deployments SET rooms = ?, buffer = ?, max_replicas = ? WHERE id = ?`, rooms, buffer, maxReplicas, id))
 }
 
 func scanDeployment(row scanner) (Deployment, error) {
 	var d Deployment
 	var since, created int64
 	r := &d.Resources
-	if err := row.Scan(&d.ID, &d.BuildID, &d.Cluster, &d.Fleet, &d.Buffer, &d.MaxReplicas, &d.Rooms,
+	if err := row.Scan(&d.ID, &d.BuildID, &d.Cluster, &d.Fleet, &d.Buffer, &d.MaxReplicas, &d.Rooms, &d.RoomsCapacity,
 		&r.CPURequest, &r.CPULimit, &r.MemoryRequest, &r.MemoryLimit, &d.State, &since, &created, &d.CreatedBy); err != nil {
 		return Deployment{}, notFound(err)
 	}

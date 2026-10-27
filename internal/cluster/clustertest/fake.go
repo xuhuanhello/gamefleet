@@ -100,10 +100,10 @@ func (f *Fake) Allocate(_ context.Context, a cluster.Allocation) (cluster.Room, 
 	}
 	match := cluster.Match{ID: a.MatchID, MatchInfo: cluster.MatchInfo{Players: a.Players, Channel: a.Channel, Compat: a.Compat}}
 	// Like Agones with the rooms list: a running game server of the Fleet with
-	// room left first, the fullest one, then a Ready one.
+	// a.MinAvailable places left first, the fullest one, then a Ready one.
 	var best *cluster.Room
 	for id, room := range f.rooms {
-		if room.Fleet == a.Fleet && room.State == "Allocated" && room.Free() > 0 && !f.retiring[id] &&
+		if room.Fleet == a.Fleet && room.State == "Allocated" && room.Free() >= a.MinAvailable() && !f.retiring[id] &&
 			(best == nil || room.Free() < best.Free() || room.Free() == best.Free() && room.ID < best.ID) {
 			r := room
 			best = &r

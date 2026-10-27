@@ -365,3 +365,30 @@ func TestMoveARouteAnywayFromTheRefusal(t *testing.T) {
 	_, body = e.get(t, "/routes")
 	contains(t, visible(body), "billiards dm-v7 #1 版本 141")
 }
+
+// How many matches each game server runs changes on the build page, and the
+// console counts and shows game servers by it.
+func TestChangeTheMatchesOfEachGameServer(t *testing.T) {
+	e := newEnv(t)
+	e.signIn(t)
+	e.serve(t)
+	_, body := e.get(t, "/builds/1")
+	if !strings.Contains(body, `name="rooms" value="50" min="1" max="80"`) {
+		t.Fatalf("build page has no field for the matches of each game server:\n%s", visible(body))
+	}
+	e.expectRedirect(t, "/deployments/1/scale",
+		url.Values{"rooms": {"1"}, "buffer": {"1"}, "max": {"10"}, "back": {"/builds/1"}}, "/builds/1")
+
+	_, body = e.get(t, "/clusters/us-1/servers/billiards-a")
+	if page := visible(body); !strings.Contains(page, "在跑 1 局，最多 1 局") {
+		t.Errorf("server page:\n%s", page)
+	}
+	_, body = e.get(t, "/servers")
+	if page := visible(body); !strings.Contains(page, "1 局在打，还能再开 1 局") {
+		t.Errorf("servers page:\n%s", page)
+	}
+	resp, body := e.post(t, "/deployments/1/scale", url.Values{"rooms": {"81"}, "buffer": {"1"}, "max": {"10"}, "back": {"/builds/1"}})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(visible(body), "每个战斗服的局数要在 1 到 80 之间") {
+		t.Errorf("81 matches: %d\n%s", resp.StatusCode, visible(body))
+	}
+}

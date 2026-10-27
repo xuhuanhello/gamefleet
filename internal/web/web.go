@@ -162,7 +162,7 @@ func (c *Console) Handler() http.Handler {
 	mux.Handle("GET /builds/{id}", c.signedIn(c.build))
 	mux.Handle("POST /builds/{id}/deploy", c.signedIn(c.deploy))
 	mux.Handle("POST /deployments/{id}/delete", c.signedIn(c.undeploy))
-	mux.Handle("POST /deployments/{id}/buffer", c.signedIn(c.setBuffer))
+	mux.Handle("POST /deployments/{id}/scale", c.signedIn(c.setScale))
 	mux.Handle("GET /routes", c.signedIn(c.routes))
 	mux.Handle("POST /routes/{action}", c.signedIn(c.routeAction))
 	mux.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
@@ -753,6 +753,7 @@ func (c *Console) node(w http.ResponseWriter, r *http.Request, p page) {
 		}
 		for _, room := range rooms {
 			if room.ID == pod.Name {
+				room := st.limited(s.Name, room)
 				row.Room = &room
 				st.tally(s.Name, room, &data.Allocated, &data.Ready)
 			}
@@ -801,8 +802,17 @@ func (st releaseState) tally(clusterName string, room cluster.Room, playing, fre
 	}
 	*playing += len(room.Matches)
 	if d, ok := st.fleetOf(clusterName, room.Fleet); ok && d.State == store.StateServing && !room.Retiring {
-		*free += room.Free()
+		*free += room.Limited(d.Rooms).Free()
 	}
+}
+
+// limited is the game server with the Capacity its deployment lets it run,
+// which the console shows: its rooms list may hold more.
+func (st releaseState) limited(clusterName string, room cluster.Room) cluster.Room {
+	if d, ok := st.fleetOf(clusterName, room.Fleet); ok {
+		return room.Limited(d.Rooms)
+	}
+	return room
 }
 
 // shown is the state a game server is shown in: one that runs no match is
@@ -911,7 +921,7 @@ func (c *Console) servers(w http.ResponseWriter, r *http.Request, p page) {
 			counts[""]++
 			st.tally(s.Name, room, &data.Allocated, &data.Ready)
 			if state == "" || serverState(room) == state {
-				data.Rows = append(data.Rows, serverRow{Cluster: s.Name, Room: room, Machine: machines[room.Node], Found: found})
+				data.Rows = append(data.Rows, serverRow{Cluster: s.Name, Room: st.limited(s.Name, room), Machine: machines[room.Node], Found: found})
 			}
 		}
 	}
@@ -994,6 +1004,9 @@ func (c *Console) server(w http.ResponseWriter, r *http.Request, p page) {
 			data.Errs = append(data.Errs, err.Error())
 		}
 	}
+	st, err := c.readReleases(ctx)
+	fail(err)
+	data.Room = st.limited(s.Name, data.Room)
 	data.Pod, err = s.Cluster.Pod(ctx, ns, room.ID)
 	fail(err)
 	data.Events, err = s.Cluster.Events(ctx, ns, room.ID)

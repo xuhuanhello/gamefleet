@@ -163,12 +163,14 @@ func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, pla
 		}
 	}
 	room, err := site.Cluster.Allocate(ctx, cluster.Allocation{
-		Fleet:   target.Fleet,
-		MatchID: req.MatchID,
-		Game:    req.Game,
-		Channel: req.Channel,
-		Compat:  req.Compat,
-		Players: players,
+		Fleet:         target.Fleet,
+		MatchID:       req.MatchID,
+		Game:          req.Game,
+		Channel:       req.Channel,
+		Compat:        req.Compat,
+		Players:       players,
+		Rooms:         target.Rooms,
+		RoomsCapacity: target.RoomsCapacity,
 	})
 	if err != nil {
 		return Result{}, err

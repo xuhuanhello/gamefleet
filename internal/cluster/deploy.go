@@ -39,9 +39,11 @@ type FleetSpec struct {
 	Port       int
 	Protocol   string // UDP or TCP
 	Replicas   int
-	// Rooms is how many matches one game server runs at once: the capacity
-	// of its rooms list.
-	Rooms int
+	// RoomsCapacity is the capacity of each game server's rooms list. It
+	// cannot change while the Fleet runs; the deployment's setting of how
+	// many matches a game server runs is applied at allocation instead, see
+	// Allocation.Rooms.
+	RoomsCapacity int
 	// CPU in millicores, memory in MiB.
 	CPURequest, CPULimit       int
 	MemoryRequest, MemoryLimit int
@@ -127,7 +129,7 @@ func (c *Client) CreateFleet(ctx context.Context, f FleetSpec) error {
 					"health": map[string]any{"initialDelaySeconds": 30},
 					// The match IDs this game server runs; allocation adds one,
 					// the game server removes it when the match is over.
-					"lists": map[string]any{ListRooms: map[string]any{"capacity": f.Rooms}},
+					"lists": map[string]any{ListRooms: map[string]any{"capacity": f.RoomsCapacity}},
 					"template": map[string]any{
 						"spec": map[string]any{
 							"nodeSelector":     map[string]string{LabelPool: "game"},

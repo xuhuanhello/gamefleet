@@ -280,24 +280,59 @@ func TestAGameKeepsItsRuntimeSecretAfterItsLastVariable(t *testing.T) {
 // runtime settings: those with variables, and, from the audit log, those
 // whose variables were all deleted before.
 func TestUpgradeFindsEveryGameThatHadRuntimeSettings(t *testing.T) {
+	s := upgradeFrom(t, "CREATE TABLE runtime_games",
+		`INSERT INTO runtime_vars (game, name, value, updated_at, updated_by) VALUES ('billiards', 'A', '1', 0, 'admin')`,
+		`INSERT INTO audit_log (at, actor, action, target, detail) VALUES
+			(0, 'admin', 'runtime.set', 'chess A', ''), (0, 'admin', 'runtime.delete', 'chess A', ''),
+			(0, 'admin', 'runtime.delete', 'go B', ''), (0, 'admin', 'route.set', 'poker stable net7', '')`)
+	if got := runtimeGames(t, s); !slices.Equal(got, []string{"billiards", "chess", "go"}) {
+		t.Fatalf("runtime games = %v", got)
+	}
+}
+
+// Opening a database of an earlier GameFleet leaves each deployment able to
+// run as many matches per game server as before, and no more: its game
+// servers' rooms lists hold that many.
+func TestUpgradeKeepsWhatEachGameServerHolds(t *testing.T) {
+	s := upgradeFrom(t, "rooms_capacity",
+		`INSERT INTO builds (id, game, digest, tag, compat, labels, port, protocol, note, registered_at, registered_by)
+			VALUES (1, 'billiards', 'sha256:aaa', 'v1', 'net7', '{}', 7770, 'UDP', '', 0, 'ci')`,
+		`INSERT INTO deployments (build_id, cluster, fleet, buffer, max_replicas, rooms, cpu_request, cpu_limit,
+			memory_request, memory_limit, state, state_since, created_at, created_by)
+			VALUES (1, 'us-1', 'billiards-1', 1, 10, 50, 250, 2000, 256, 1024, 'serving', 0, 0, 'admin')`)
+	var d Deployment
+	err := s.View(context.Background(), func(tx *Tx) error {
+		var err error
+		d, err = tx.Deployment(1)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Rooms != 50 || d.RoomsCapacity != 50 {
+		t.Fatalf("rooms = %d of %d, want 50 of 50", d.Rooms, d.RoomsCapacity)
+	}
+}
+
+// upgradeFrom opens a database that the GameFleet before the migration
+// containing text left, with rows the statements add.
+func upgradeFrom(t *testing.T, migration string, statements ...string) *Store {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "gamefleet.db")
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := len(schema) - 1 // the database as the version before this one left it
+	before := slices.IndexFunc(schema, func(m string) bool { return strings.Contains(m, migration) })
+	if before < 0 {
+		t.Fatalf("no migration contains %q", migration)
+	}
 	for _, m := range schema[:before] {
 		if _, err := db.Exec(m); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, q := range []string{
-		fmt.Sprintf("PRAGMA user_version = %d", before),
-		`INSERT INTO runtime_vars (game, name, value, updated_at, updated_by) VALUES ('billiards', 'A', '1', 0, 'admin')`,
-		`INSERT INTO audit_log (at, actor, action, target, detail) VALUES
-			(0, 'admin', 'runtime.set', 'chess A', ''), (0, 'admin', 'runtime.delete', 'chess A', ''),
-			(0, 'admin', 'runtime.delete', 'go B', ''), (0, 'admin', 'route.set', 'poker stable net7', '')`,
-	} {
+	for _, q := range append([]string{fmt.Sprintf("PRAGMA user_version = %d", before)}, statements...) {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
@@ -307,10 +342,8 @@ func TestUpgradeFindsEveryGameThatHadRuntimeSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-	if got := runtimeGames(t, s); !slices.Equal(got, []string{"billiards", "chess", "go"}) {
-		t.Fatalf("runtime games = %v", got)
-	}
+	t.Cleanup(func() { s.Close() })
+	return s
 }
 
 // A daily backup copies the database through a connection of its own, while
