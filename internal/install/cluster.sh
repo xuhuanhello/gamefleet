@@ -72,13 +72,51 @@ status() {
 		"$1" "$2" "$3" "$(json "$4")" "$(json "${5:-}")")" >/dev/null
 }
 
-if [ -z "$public_ip" ]; then
-	public_ip=$(curl -sf --max-time 10 "$GAMEFLEET/install/ip") || fail "查不到这台机器的公网 IP，请加上 --public-ip"
-fi
-echo "$public_ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || fail "公网 IP '$public_ip' 不像 IPv4 地址"
-say "在 $public_ip 上安装集群 $name（地区 $region）"
 
 MANIFESTS=/var/lib/rancher/k3s/server/manifests
+kubectl() { /usr/local/bin/k3s kubectl "$@"; }
+wait_for() {
+	what=$1; shift
+	i=0
+	until "$@" >/dev/null 2>&1; do
+		i=$((i + 1))
+		[ $i -lt 120 ] || fail "等${what}超时了"
+		sleep 5
+	done
+}
+# hand_over gives GameFleet the cluster: a new token first when asked, then
+# the token, the CA, the address and the join token, reported until
+# GameFleet takes them.
+hand_over() {
+	# A new token ends the old one: Kubernetes stops taking a token once its
+	# Secret is gone. GameFleet is cut off from the cluster until it has the new
+	# one, which this script reports next.
+	if [ -n "$rotate_token" ]; then
+		say "换掉 GameFleet 用的 token，旧的马上作废"
+		kubectl -n "$NAMESPACE" delete secret gamefleet-token --ignore-not-found >/dev/null || fail "删不掉旧的 token"
+		kubectl apply -f "$MANIFESTS/gamefleet.yaml" >/dev/null || fail "建不了新的 token"
+	fi
+	token_ready() { [ -n "$(kubectl -n "$NAMESPACE" get secret gamefleet-token -o jsonpath='{.data.token}')" ]; }
+	wait_for " GameFleet 的账号" token_ready
+
+	token=$(kubectl -n "$NAMESPACE" get secret gamefleet-token -o jsonpath='{.data.token}' | base64 -d)
+	ca=$(kubectl -n "$NAMESPACE" get secret gamefleet-token -o jsonpath='{.data.ca\.crt}')
+	body=$(printf '{"stage":"connect","connection":{"name":"%s","region":"%s","server":"https://%s:6443","caBase64":"%s","token":"%s","namespace":"%s","joinUrl":"https://%s:6443","joinToken":"%s"}}' \
+		"$name" "$region" "$public_ip" "$ca" "$token" "$NAMESPACE" "$public_ip" "$agent_token")
+
+	say "GameFleet 正在连接这个集群"
+	while :; do
+		status=$(report "$body")
+		case "$status" in
+		200) break ;;
+		403) fail "加入码过期了；请在控制台重新生成，再执行新的命令（已经装好的部分会接着用）" ;;
+		esac
+		say "还没连上：$(cat /tmp/gamefleet-report 2>/dev/null)"
+		say "请确认云防火墙对 GameFleet 所在的机器放行了 TCP 6443；15 秒后再试"
+		sleep 15
+	done
+	rm -f /tmp/gamefleet-report
+}
 # An earlier run wrote the config before it installed K3s, and may have
 # stopped in between, a download failing say. It counts as installed only
 # when the binary and the service are there too; otherwise the installer
@@ -88,7 +126,7 @@ if grep -q '^# gamefleet cluster' "$CONFIG" 2>/dev/null; then
 	configured=1
 	if [ -x /usr/local/bin/k3s ] && [ -f /etc/systemd/system/k3s.service ]; then
 		installed=1
-		say "上次已经装过 K3s，接着往下装"
+		[ -n "$rejoin" ] || say "上次已经装过 K3s，接着往下装"
 	else
 		say "上次写好了配置，K3s 没装完，这次接着装"
 	fi
@@ -103,7 +141,28 @@ if [ -n "$rejoin" ]; then
 	grep -qx "# gamefleet cluster $name" "$CONFIG" || fail "这台机器装的是别的集群，不是 $name"
 	control_plane_only=''
 	grep -q 'gamefleet.io/pool=game' "$CONFIG" || control_plane_only=1
+	# Only what the connection needs: the config stays as it is and K3s
+	# keeps running, so no game server stops, and no other machine of the
+	# cluster has to be ready. GameFleet gets the address and join token the
+	# cluster has.
+	public_ip=$(sed -n 's/^node-external-ip: //p' "$CONFIG")
+	agent_token=$(sed -n 's/^agent-token: //p' "$CONFIG")
+	[ -n "$public_ip" ] && [ -n "$agent_token" ] || fail "这台机器的 K3s 配置里没有地址或者加入用的 token"
+	[ -z "$rotate_token" ] || [ -f "$MANIFESTS/gamefleet.yaml" ] || fail "这台机器上没有 GameFleet 的集群清单，换不了 token"
+	say "重新接入集群 ${name}（地区 ${region}），K3s 照常运行"
+	systemctl is-active --quiet k3s || systemctl start k3s || fail "K3s 起不来，原因看 journalctl -u k3s"
+	wait_for " K3s 的 API" kubectl get --raw /readyz
+	hand_over
+	echo
+	say "集群 $name 已经重新接入。"
+	exit 0
 fi
+
+if [ -z "$public_ip" ]; then
+	public_ip=$(curl -sf --max-time 10 "$GAMEFLEET/install/ip") || fail "查不到这台机器的公网 IP，请加上 --public-ip"
+fi
+echo "$public_ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || fail "公网 IP '$public_ip' 不像 IPv4 地址"
+say "在 $public_ip 上安装集群 ${name}（地区 ${region}）"
 
 # K3s applies every file in this directory when it starts and again when one
 # changes, so running this script again brings them up to date too.
@@ -157,16 +216,6 @@ if ! cmp -s /tmp/gamefleet-agones.yaml "$MANIFESTS/agones.yaml"; then
 fi
 rm -f /tmp/gamefleet-agones.yaml
 
-kubectl() { /usr/local/bin/k3s kubectl "$@"; }
-wait_for() {
-	what=$1; shift
-	i=0
-	until "$@" >/dev/null 2>&1; do
-		i=$((i + 1))
-		[ $i -lt 120 ] || fail "等$what超时了"
-		sleep 5
-	done
-}
 
 # network_check prints what this machine's network looks like from inside
 # the cluster, to tell why something there cannot reach the internet. A pod
@@ -177,9 +226,9 @@ network_check() {
 	if [ -z "$api" ] || [ "$api" = : ]; then
 		say "网络自检：查不到集群 API 登记的地址"
 	elif curl -sk -o /dev/null --max-time 5 "https://$api/"; then
-		say "网络自检：集群 API 登记在 $api，本机连得上"
+		say "网络自检：集群 API 登记在 ${api}，本机连得上"
 	else
-		say "网络自检：集群 API 登记在 $api，本机连不上它，集群里的程序也就连不上 API"
+		say "网络自检：集群 API 登记在 ${api}，本机连不上它，集群里的程序也就连不上 API"
 	fi
 	say "网络自检：本机的 DNS 服务器 $(awk '/^nameserver/ { printf "%s ", $2 }' /etc/resolv.conf)"
 	[ ! -f /var/lib/rancher/k3s/agent/etc/resolv.conf ] ||
@@ -376,38 +425,12 @@ while :; do
 	agones_state
 	status agones "$part" 3 "$step" "$problem"
 	[ -z "$ready" ] || break
-	[ "$(date +%s)" -lt "$deadline" ] || fail "Agones 15 分钟还没装好，停在“$step”${problem:+：$problem}"
+	[ "$(date +%s)" -lt "$deadline" ] || fail "Agones 15 分钟还没装好，停在“${step}”${problem:+：$problem}"
 	sleep 5
 done
 rm -f /tmp/gamefleet-pulled /tmp/gamefleet-pulled-now
-# A new token ends the old one: Kubernetes stops taking a token once its
-# Secret is gone. GameFleet is cut off from the cluster until it has the new
-# one, which this script reports next.
-if [ -n "$rotate_token" ]; then
-	say "换掉 GameFleet 用的 token，旧的马上作废"
-	kubectl -n "$NAMESPACE" delete secret gamefleet-token --ignore-not-found >/dev/null || fail "删不掉旧的 token"
-	kubectl apply -f "$MANIFESTS/gamefleet.yaml" >/dev/null || fail "建不了新的 token"
-fi
-token_ready() { [ -n "$(kubectl -n "$NAMESPACE" get secret gamefleet-token -o jsonpath='{.data.token}')" ]; }
-wait_for " GameFleet 的账号" token_ready
-
-token=$(kubectl -n "$NAMESPACE" get secret gamefleet-token -o jsonpath='{.data.token}' | base64 -d)
-ca=$(kubectl -n "$NAMESPACE" get secret gamefleet-token -o jsonpath='{.data.ca\.crt}')
-body=$(printf '{"stage":"connect","connection":{"name":"%s","region":"%s","server":"https://%s:6443","caBase64":"%s","token":"%s","namespace":"%s","joinUrl":"https://%s:6443","joinToken":"%s"}}' \
-	"$name" "$region" "$public_ip" "$ca" "$token" "$NAMESPACE" "$public_ip" "$agent_token")
-
-say "K3s 和 Agones 已经装好，GameFleet 正在连接这个集群"
-while :; do
-	status=$(report "$body")
-	case "$status" in
-	200) break ;;
-	403) fail "加入码过期了；请在控制台重新生成，再执行新的命令（已经装好的部分会接着用）" ;;
-	esac
-	say "还没连上：$(cat /tmp/gamefleet-report 2>/dev/null)"
-	say "请确认云防火墙对 GameFleet 所在的机器放行了 TCP 6443；15 秒后再试"
-	sleep 15
-done
-rm -f /tmp/gamefleet-report
+say "K3s 和 Agones 已经装好"
+hand_over
 
 if [ -n "$control_plane_only" ]; then
 	cat <<EOF

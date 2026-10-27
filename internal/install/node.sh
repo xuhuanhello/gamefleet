@@ -43,7 +43,7 @@ echo "$public_ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || fail "公网 
 
 # K3s names the node after the host name, in lower case.
 node=$(hostname | tr 'A-Z' 'a-z')
-say "以 $node（$public_ip）的身份加入 $server"
+say "以 ${node}（${public_ip}）的身份加入 $server"
 say "下载并安装 K3s $K3S_VERSION"
 curl -sfL --max-time 60 https://get.k3s.io -o /tmp/k3s-install.sh || fail "下载不了 K3s 的安装脚本（get.k3s.io）"
 # The installer would start the agent and wait for it, forever when the

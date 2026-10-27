@@ -31,7 +31,7 @@ if [ ! -f compose.yaml ]; then
 	cd /opt/gamefleet
 	say "下载 v$VERSION 的部署文件到 /opt/gamefleet"
 	curl -fsSL --max-time 60 "$RELEASES/download/v$VERSION/gamefleet-deploy.tar.gz" | tar -xzf - ||
-		fail "下载不了部署文件（$RELEASES）"
+		fail "下载不了部署文件（${RELEASES}）"
 	exec sh install.sh "$@"
 fi
 
@@ -66,7 +66,7 @@ if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>
 fi
 if ! docker image inspect "$image" >/dev/null 2>&1; then
 	say "下载镜像 $image"
-	docker pull -q "$image" >/dev/null 2>&1 || fail "这台机器上没有镜像 $image，也下载不了"
+	docker pull -q "$image" >/dev/null 2>&1 || fail "这台机器上没有镜像 ${image}，也下载不了"
 fi
 
 # The updater installs the releases the console asks for (see updater.sh).
@@ -158,7 +158,7 @@ fi
 echo
 say "装好了，控制台在 https://$domain"
 [ -f credentials/console-password ] && cat <<EOF
-控制台账号是 $user。密码和验证器链接只在这台机器上：
+控制台账号是 ${user}。密码和验证器链接只在这台机器上：
   $PWD/credentials/console-password
   $PWD/credentials/console-otpauth
 在你自己的终端里取出来，把链接加进验证器 App；能登录以后就可以删掉这两个文件。

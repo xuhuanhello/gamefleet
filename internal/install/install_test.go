@@ -218,7 +218,7 @@ func TestClusterScriptResumesFromWhatIsThere(t *testing.T) {
 	k3s, unit, config := filepath.Join(dir, "k3s"), filepath.Join(dir, "k3s.service"), filepath.Join(dir, "config.yaml")
 	detect := block(t, script, "configured='' installed=''", "fi")
 	paths := []string{"/usr/local/bin/k3s", k3s, "/etc/systemd/system/k3s.service", unit}
-	setup := "CONFIG=" + config
+	setup := "rejoin= CONFIG=" + config
 	cases := []struct {
 		name                    string
 		marked, binary, service bool
@@ -279,28 +279,42 @@ func TestClusterScriptRejoinsAsTheControlPlaneWas(t *testing.T) {
 	srv := serve(t, &joins{})
 	_, script := get(t, srv.URL+"/install/cluster.sh")
 	rejoin := block(t, script, `if [ -n "$rejoin" ]; then`, "fi")
+	// The helpers it calls: waiting passes at once, and the hand-over says
+	// what it would report.
+	helpers := `wait_for() { shift; "$@"; }
+hand_over() { echo "handed over public_ip=$public_ip agent_token=$agent_token control_plane_only=$control_plane_only."; }
+`
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	config := filepath.Join(dir, "config.yaml")
+	known := "node-external-ip: 203.0.113.7\nagent-token: secret-agent\n"
 	for _, c := range []struct {
 		name, installed, config, want string
 	}{
-		{"not installed", "", "# gamefleet cluster sg-1\n", "fail: 这台机器上没有 GameFleet 装的集群"},
-		{"another cluster", "1", "# gamefleet cluster jp-1\n", "fail: 这台机器装的是别的集群"},
-		{"runs game servers", "1", "# gamefleet cluster sg-1\nnode-label: [\"gamefleet.io/pool=game\", \"gamefleet.io/cluster=sg-1\"]\n", "control_plane_only=."},
-		{"control plane only", "1", "# gamefleet cluster sg-1\nnode-label: [\"gamefleet.io/cluster=sg-1\"]\n", "control_plane_only=1."},
+		{"not installed", "", "# gamefleet cluster sg-1\n" + known, "fail: 这台机器上没有 GameFleet 装的集群"},
+		{"another cluster", "1", "# gamefleet cluster jp-1\n" + known, "fail: 这台机器装的是别的集群"},
+		{"no address", "1", "# gamefleet cluster sg-1\n", "fail: 这台机器的 K3s 配置里没有地址"},
+		{"runs game servers", "1", "# gamefleet cluster sg-1\n" + known + "node-label: [\"gamefleet.io/pool=game\", \"gamefleet.io/cluster=sg-1\"]\n",
+			"handed over public_ip=203.0.113.7 agent_token=secret-agent control_plane_only=."},
+		{"control plane only", "1", "# gamefleet cluster sg-1\n" + known + "node-label: [\"gamefleet.io/cluster=sg-1\"]\n",
+			"handed over public_ip=203.0.113.7 agent_token=secret-agent control_plane_only=1."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if err := os.WriteFile(config, []byte(c.config), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			// The command line said the opposite of what the machine has.
-			setup := "CONFIG=" + config + " name=sg-1 rejoin=1 installed=" + c.installed + " control_plane_only=x"
-			out, _ := runBlock(t, dir, rejoin+"\necho \"control_plane_only=$control_plane_only.\"", setup)
+			setup := helpers + "CONFIG=" + config + " MANIFESTS=" + dir + " name=sg-1 region=sg rejoin=1 rotate_token= installed=" + c.installed +
+				" control_plane_only=x public_ip=198.51.100.9 agent_token=other"
+			out, ran := runBlock(t, dir, rejoin, setup)
 			if !strings.Contains(out, c.want) {
 				t.Fatalf("got %q, want %q", out, c.want)
+			}
+			// K3s keeps running: nothing stops or restarts it.
+			if strings.Contains(ran, "killall") || strings.Contains(ran, "restart") || strings.Contains(ran, "systemctl start") {
+				t.Fatalf("a rejoin touched K3s: %q", ran)
 			}
 		})
 	}
@@ -311,7 +325,7 @@ func TestClusterScriptRejoinsAsTheControlPlaneWas(t *testing.T) {
 func TestClusterScriptRotatesTheToken(t *testing.T) {
 	srv := serve(t, &joins{})
 	_, script := get(t, srv.URL+"/install/cluster.sh")
-	rotate := block(t, script, `if [ -n "$rotate_token" ]; then`, "fi")
+	rotate := block(t, script, "\t"+`if [ -n "$rotate_token" ]; then`, "\tfi")
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
