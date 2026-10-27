@@ -1,6 +1,7 @@
 // Package health keeps what GameFleet knows of its own health: when its
-// loops last got through, when it last reached each cluster, how allocation
-// went lately, and how old the newest daily backup is. An outside monitor
+// loops last got through, when it last reached each cluster, which game
+// servers will not come up, how allocation went lately, and how old the
+// newest daily backup is. An outside monitor
 // reads it at /status, which answers 503 when something needs a person.
 //
 // /healthz stays what it was: the process runs, and its version. The updater
@@ -29,6 +30,11 @@ const (
 	MinAllocations   = 5
 	FailedShare      = 0.5
 	SlowAllocation   = 10 * time.Second
+	// StuckGameServer: a game server that has not become Ready this long
+	// after it was made is stuck. A Unity server is Ready in about a minute;
+	// stuck ones most often have no node with room for them, so the next
+	// matches will find no game server either.
+	StuckGameServer = 3 * time.Minute
 	// StaleBackup: the daily backup runs once a day, at a random time in an
 	// hour; one older than this has failed or stopped.
 	StaleBackup = 26 * time.Hour
@@ -49,8 +55,9 @@ type Monitor struct {
 
 	mu       sync.Mutex
 	started  time.Time
-	passes   map[string]pass    // by loop
-	contacts map[string]contact // cluster: when GameFleet last reached it
+	passes   map[string]pass       // by loop
+	contacts map[string]contact    // cluster: when GameFleet last reached it
+	starting map[string][]Starting // cluster: its game servers not Ready yet
 	allocs   []allocation
 }
 
@@ -65,6 +72,13 @@ type contact struct {
 	lastErr string
 }
 
+// Starting is a game server that is not Ready yet: its Agones state, and
+// when it was made.
+type Starting struct {
+	State   string
+	Created time.Time
+}
+
 type allocation struct {
 	at     time.Time
 	took   time.Duration
@@ -74,7 +88,8 @@ type allocation struct {
 // New returns a monitor. newestBackup may be nil when there are no daily
 // backups to watch.
 func New(now func() time.Time, newestBackup func() (time.Time, error)) *Monitor {
-	return &Monitor{now: now, newestBackup: newestBackup, started: now(), passes: map[string]pass{}, contacts: map[string]contact{}}
+	return &Monitor{now: now, newestBackup: newestBackup, started: now(), passes: map[string]pass{}, contacts: map[string]contact{},
+		starting: map[string][]Starting{}}
 }
 
 // Pass records that a loop got through a pass, and whether the pass had an
@@ -108,6 +123,17 @@ func (m *Monitor) Contact(cluster string, err error) {
 		c.lastErr = err.Error()
 	}
 	m.contacts[cluster] = c
+}
+
+// Starting records the cluster's game servers that are not Ready yet, as the
+// release loop just found them.
+func (m *Monitor) Starting(cluster string, servers []Starting) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.starting[cluster] = servers
 }
 
 // Allocation records one allocation: how long it took and whether it failed
@@ -199,7 +225,7 @@ func (m *Monitor) Check(loops, clusters []string) Status {
 		default:
 			c.Detail = fmt.Sprintf("%s 前最后一次连上", age(now.Sub(ct.ok)))
 		}
-		checks = append(checks, c)
+		checks = append(checks, c, stuck(name, m.starting[name], now))
 	}
 	var count, failed int
 	var slowest time.Duration
@@ -251,6 +277,34 @@ func (m *Monitor) Check(loops, clusters []string) Status {
 		checks = append(checks, c)
 	}
 	return Status{OK: !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK }), Checks: checks}
+}
+
+// stuck checks the cluster's game servers that are not Ready yet.
+func stuck(cluster string, starting []Starting, now time.Time) Check {
+	c := Check{Name: "gameservers " + cluster, OK: true, Detail: "没有卡住的战斗服"}
+	var n int
+	var oldest Starting
+	for _, s := range starting {
+		if now.Sub(s.Created) <= StuckGameServer {
+			continue
+		}
+		if n++; n == 1 || s.Created.Before(oldest.Created) {
+			oldest = s
+		}
+	}
+	switch {
+	case n == 0 && len(starting) > 0:
+		c.Detail = fmt.Sprintf("%d 个正在启动", len(starting))
+	case n > 0:
+		why := "已经分到节点，但没有就绪：可能是镜像拉不下来、进程起不来，或者没调 Ready()"
+		if oldest.State == "" || oldest.State == "PortAllocation" || oldest.State == "Creating" || oldest.State == "Starting" {
+			why = "还没分到节点：多半是游戏节点的 CPU 或内存不够放下它，新的对局很快会分不到战斗服"
+		}
+		c.OK = false
+		c.Detail = fmt.Sprintf("%d 个战斗服超过 %s 没起来，最久的 %s，停在 %s。%s。原因看控制台集群页的事件",
+			n, age(StuckGameServer), age(now.Sub(oldest.Created)), oldest.State, why)
+	}
+	return c
 }
 
 func age(d time.Duration) string {

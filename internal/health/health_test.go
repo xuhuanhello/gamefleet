@@ -149,3 +149,33 @@ func TestOffsite(t *testing.T) {
 		t.Fatalf("stale: %+v", o)
 	}
 }
+
+func TestStuckGameServers(t *testing.T) {
+	c := &clock{time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
+	m := New(c.now, nil)
+	servers := func() Check { t.Helper(); return check(t, m.Check(nil, []string{"us-1"}), "gameservers us-1") }
+	if s := servers(); !s.OK {
+		t.Fatalf("nothing seen yet: %+v", s)
+	}
+	m.Starting("us-1", []Starting{{State: "Scheduled", Created: c.t.Add(-time.Minute)}})
+	if s := servers(); !s.OK || !strings.Contains(s.Detail, "1 个正在启动") {
+		t.Fatalf("one starting for a minute: %+v", s)
+	}
+	m.Starting("us-1", []Starting{
+		{State: "Scheduled", Created: c.t.Add(-time.Minute)},
+		{State: "Starting", Created: c.t.Add(-StuckGameServer - 2*time.Minute)},
+		{State: "Scheduled", Created: c.t.Add(-StuckGameServer - time.Minute)},
+	})
+	s := servers()
+	if s.OK || !strings.Contains(s.Detail, "2 个战斗服") || !strings.Contains(s.Detail, "停在 Starting") || !strings.Contains(s.Detail, "CPU 或内存") {
+		t.Fatalf("two stuck, the oldest unscheduled: %+v", s)
+	}
+	m.Starting("us-1", []Starting{{State: "Scheduled", Created: c.t.Add(-StuckGameServer - time.Minute)}})
+	if s := servers(); s.OK || !strings.Contains(s.Detail, "已经分到节点") {
+		t.Fatalf("one stuck on a node: %+v", s)
+	}
+	m.Starting("us-1", nil)
+	if s := servers(); !s.OK {
+		t.Fatalf("all up: %+v", s)
+	}
+}

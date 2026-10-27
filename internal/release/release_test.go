@@ -14,6 +14,7 @@ import (
 
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
 	"github.com/xuhuanhello/gamefleet/internal/cluster/clustertest"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/registry"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
@@ -834,4 +835,23 @@ func TestAGameServerFullOfNotesStopsTakingMatches(t *testing.T) {
 	if r, _ := f.us.Get(ctx, "full"); r == nil {
 		t.Fatal("a game server with a match running was stopped")
 	}
+}
+
+// The loop tells the monitor which game servers are not up yet.
+func TestReconcileReportsGameServersThatAreNotUp(t *testing.T) {
+	f := newFixture(t)
+	m := health.New(func() time.Time { return f.now }, nil)
+	f.svc.SetMonitor(m)
+	f.us.AddRoom(cluster.Room{ID: "gs-ready", State: "Ready", Created: f.now.Add(-time.Hour)})
+	f.us.AddRoom(cluster.Room{ID: "gs-pending", State: "Starting", Created: f.now.Add(-health.StuckGameServer - time.Minute)})
+	f.reconcile(t)
+	for _, c := range m.Check(nil, []string{"us-1"}).Checks {
+		if c.Name == "gameservers us-1" {
+			if c.OK || !strings.Contains(c.Detail, "1 个战斗服") {
+				t.Fatalf("check = %+v", c)
+			}
+			return
+		}
+	}
+	t.Fatal("no gameservers check")
 }

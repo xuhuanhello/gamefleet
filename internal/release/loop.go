@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xuhuanhello/gamefleet/internal/cluster"
+	"github.com/xuhuanhello/gamefleet/internal/health"
 	"github.com/xuhuanhello/gamefleet/internal/sites"
 	"github.com/xuhuanhello/gamefleet/internal/store"
 )
@@ -102,6 +103,7 @@ func (s *Service) reconcileSite(ctx context.Context, site sites.Site, deployment
 	if err != nil {
 		return err
 	}
+	s.monitor.Starting(site.Name, starting(rooms))
 	// The deployments' own Fleets, by name.
 	live := map[string]bool{}
 	var errs []error
@@ -281,4 +283,17 @@ func (s *Service) removeLeftover(ctx context.Context, site sites.Site, f cluster
 	}
 	s.log.Info("leftover fleet deleted", "cluster", site.Name, "fleet", f.Name)
 	return site.Cluster.DeleteFleet(ctx, f.Name)
+}
+
+// starting lists the game servers that are not Ready yet: in the states
+// Agones passes through before it.
+func starting(rooms []cluster.Room) []health.Starting {
+	var out []health.Starting
+	for _, r := range rooms {
+		switch r.State {
+		case "", "PortAllocation", "Creating", "Starting", "Scheduled", "RequestReady":
+			out = append(out, health.Starting{State: r.State, Created: r.Created})
+		}
+	}
+	return out
 }
