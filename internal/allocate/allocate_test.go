@@ -430,3 +430,149 @@ func TestAllocationPassesByAGameServerFullOfNotes(t *testing.T) {
 		t.Fatalf("allocated to %s; full retiring %v", result.Room.ID, us.Retiring("full"))
 	}
 }
+
+// gated is a cluster with no room while shut. It counts what it is asked, and
+// when hold is set the next allocation closes held and waits for hold.
+type gated struct {
+	*clustertest.Fake
+	mu         sync.Mutex
+	shut       bool
+	asked      int
+	hold, held chan struct{}
+}
+
+func (g *gated) Rooms(ctx context.Context) ([]cluster.Room, error) {
+	g.mu.Lock()
+	g.asked++
+	g.mu.Unlock()
+	return g.Fake.Rooms(ctx)
+}
+
+func (g *gated) Allocate(ctx context.Context, a cluster.Allocation) (cluster.Room, error) {
+	g.mu.Lock()
+	g.asked++
+	shut, hold, held := g.shut, g.hold, g.held
+	g.hold = nil
+	g.mu.Unlock()
+	if hold != nil {
+		close(held)
+		<-hold
+	}
+	if shut {
+		return cluster.Room{}, cluster.ErrNoCapacity
+	}
+	return g.Fake.Allocate(ctx, a)
+}
+
+func (g *gated) set(shut bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.shut = shut
+}
+
+func (g *gated) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.asked
+}
+
+// gatedService serves us from g, on a clock the test moves.
+func gatedService(t *testing.T, g *gated) (*Service, *time.Time) {
+	t.Helper()
+	svc := newService(t, clustertest.New("us-1", 0), clustertest.New("sg-1", 0))
+	svc.sites = sites.New(sites.Site{Name: "us-1", Region: "us", Cluster: g})
+	clock := time.Date(2026, 10, 27, 18, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return clock }
+	return svc, &clock
+}
+
+func TestANewMatchOnAFullRouteIsTurnedAwayAtOnce(t *testing.T) {
+	g := &gated{Fake: clustertest.New("us-1", 5), shut: true}
+	svc, clock := gatedService(t, g)
+	ctx := context.Background()
+
+	if _, err := svc.Allocate(ctx, request("m-1", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-1: err = %v, want ErrNoCapacity", err)
+	}
+	asked := g.count()
+	if _, err := svc.Allocate(ctx, request("m-2", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-2: err = %v, want ErrNoCapacity", err)
+	}
+	if g.count() != asked {
+		t.Fatalf("a new match on a full route asked the cluster %d times", g.count()-asked)
+	}
+
+	// Another route has game servers of its own.
+	g.set(false)
+	if _, err := svc.Allocate(ctx, request("m-3", "us", "canary")); err != nil {
+		t.Fatalf("canary while stable is full: %v", err)
+	}
+	if _, err := svc.Allocate(ctx, request("m-4", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-4 within FullFor: err = %v, want ErrNoCapacity", err)
+	}
+	*clock = clock.Add(FullFor)
+	if _, err := svc.Allocate(ctx, request("m-5", "us", "stable")); err != nil {
+		t.Fatalf("m-5 after FullFor: %v", err)
+	}
+}
+
+// A retry finds the room its match got even while the route counts as full,
+// and an allocation that goes through ends the route's time as full.
+func TestAMatchAskedAboutBeforeIsLookedForWhileItsRouteIsFull(t *testing.T) {
+	g := &gated{Fake: clustertest.New("us-1", 1)}
+	svc, _ := gatedService(t, g)
+	ctx := context.Background()
+
+	first, err := svc.Allocate(ctx, request("m-1", "us", "stable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Allocate(ctx, request("m-2", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-2: err = %v, want ErrNoCapacity", err)
+	}
+	again, err := svc.Allocate(ctx, request("m-1", "us", "stable"))
+	if err != nil || again.Created || again.Room.ID != first.Room.ID {
+		t.Fatalf("m-1 again = %+v, %v; want its room %s", again, err, first.Room.ID)
+	}
+
+	// Game servers became Ready, and m-2's retry got one; m-3, new, need not
+	// wait out FullFor for the other.
+	g.Fake = clustertest.New("us-1", 2)
+	if _, err := svc.Allocate(ctx, request("m-2", "us", "stable")); err != nil {
+		t.Fatalf("m-2 again: %v", err)
+	}
+	if _, err := svc.Allocate(ctx, request("m-3", "us", "stable")); err != nil {
+		t.Fatalf("m-3 after an allocation went through: %v", err)
+	}
+}
+
+// Matches that wait for the cluster's turn while another finds the route full
+// are turned away when their turn comes.
+func TestMatchesWaitingForTheTurnAreTurnedAwayWhenTheRouteIsFound(t *testing.T) {
+	g := &gated{Fake: clustertest.New("us-1", 0), shut: true, hold: make(chan struct{}), held: make(chan struct{})}
+	svc, _ := gatedService(t, g)
+	ctx := context.Background()
+	hold := g.hold
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := svc.Allocate(ctx, request("m-1", "us", "stable"))
+		errs <- err
+	}()
+	<-g.held
+	go func() {
+		_, err := svc.Allocate(ctx, request("m-2", "us", "stable"))
+		errs <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // m-2 waits for the turn
+	close(hold)
+	for range 2 {
+		if err := <-errs; !errors.Is(err, ErrNoCapacity) {
+			t.Fatalf("err = %v, want ErrNoCapacity", err)
+		}
+	}
+	// m-1 looked three times, a list and an allocation each; m-2 not at all.
+	if g.count() != 6 {
+		t.Fatalf("the cluster was asked %d times, want 6", g.count())
+	}
+}

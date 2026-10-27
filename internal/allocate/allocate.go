@@ -26,6 +26,26 @@ var (
 	ErrRouteNotFound = errors.New("route_not_found")
 	ErrNoCapacity    = errors.New("no_capacity")
 	ErrUnavailable   = errors.New("cluster_unavailable")
+
+	// errFull: the route was found full a moment ago, so the cluster was not
+	// asked.
+	errFull = errors.New("route full")
+)
+
+const (
+	// FullFor is how long a route counts as full after Agones found no game
+	// server with room for it. A new match on it in that time is answered
+	// no_capacity at once, without waiting for the cluster's turn: when more
+	// matches come than the game servers hold, each one that waited its turn
+	// only to hear the same slowed all the others, until the game backend
+	// gave up on them before their turn came. A place that frees up waits at
+	// most this long.
+	FullFor = 2 * time.Second
+	// seenFor is how long a match ID is remembered. A match asked about
+	// before is always looked for in the cluster, so a retry finds the room
+	// it got even while its route counts as full. Nakama gives up on a match
+	// after 30 seconds.
+	seenFor = time.Minute
 )
 
 // Request asks for a room for one match.
@@ -68,6 +88,16 @@ type Service struct {
 	// a game server at most one new match per allocation batch, so matches
 	// allocated together spread over game servers, or find none and fail.
 	turns sync.Map
+
+	now     func() time.Time
+	fullFor time.Duration
+	mu      sync.Mutex
+	// full: until when each route counts as full, by routeKey.
+	full map[string]time.Time
+	// seen: the match IDs asked about since seenSince, and in the seenFor
+	// before it.
+	seen      [2]map[string]bool
+	seenSince time.Time
 }
 
 var (
@@ -81,7 +111,8 @@ var (
 
 // New builds the service from the router and the clusters.
 func New(router Router, dir *sites.Directory) *Service {
-	return &Service{router: router, sites: dir, retryWait: 25 * time.Millisecond, capacityWait: 300 * time.Millisecond}
+	return &Service{router: router, sites: dir, retryWait: 25 * time.Millisecond, capacityWait: 300 * time.Millisecond,
+		now: time.Now, fullFor: FullFor, full: map[string]time.Time{}, seen: [2]map[string]bool{{}, {}}}
 }
 
 // Allocate returns the room for the match, allocating one only if the match
@@ -102,11 +133,16 @@ func (s *Service) Allocate(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	newMatch := s.firstAsk(req.MatchID)
 	contended, full := 0, 0
 	for {
-		result, err := s.attempt(ctx, site, req, players)
+		// A new match on a full route is turned away; but not by the request
+		// that found it full, which looks again after its waits below.
+		result, err := s.attempt(ctx, site, req, players, newMatch && full == 0)
 		var wait time.Duration
 		switch {
+		case errors.Is(err, errFull):
+			return Result{}, ErrNoCapacity
 		case errors.Is(err, cluster.ErrContention) && contended < 2:
 			contended++
 			wait = time.Duration(contended) * s.retryWait
@@ -130,13 +166,22 @@ func (s *Service) Allocate(ctx context.Context, req Request) (Result, error) {
 }
 
 // attempt looks for the match's room in the cluster, and allocates one when
-// there is none, all in one turn of the cluster.
-func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, players []byte) (Result, error) {
+// there is none, all in one turn of the cluster. When turnAway is set and the
+// route counts as full, it returns errFull without asking the cluster, before
+// it waits for the turn and again after, as the route may have been found
+// full meanwhile.
+func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, players []byte, turnAway bool) (Result, error) {
+	if turnAway && s.isFull(req) {
+		return Result{}, errFull
+	}
 	done, err := s.turn(ctx, site.Name)
 	if err != nil {
 		return Result{}, err
 	}
 	defer done()
+	if turnAway && s.isFull(req) {
+		return Result{}, errFull
+	}
 	rooms, err := site.Cluster.Rooms(ctx)
 	if err != nil {
 		return Result{}, err
@@ -173,8 +218,12 @@ func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, pla
 		RoomsCapacity: target.RoomsCapacity,
 	})
 	if err != nil {
+		if errors.Is(err, cluster.ErrNoCapacity) {
+			s.setFull(req, true)
+		}
 		return Result{}, err
 	}
+	s.setFull(req, false)
 	room.Build = strconv.FormatInt(target.Build, 10)
 	return Result{Room: room, Created: true}, nil
 }
@@ -189,6 +238,50 @@ func (s *Service) turn(ctx context.Context, cluster string) (func(), error) {
 		return func() { <-turn }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+// firstAsk records that the match was asked about, and reports whether it
+// was the first time in seenFor.
+func (s *Service) firstAsk(matchID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now := s.now(); now.Sub(s.seenSince) >= seenFor {
+		s.seen[0], s.seen[1], s.seenSince = map[string]bool{}, s.seen[0], now
+	}
+	if s.seen[0][matchID] || s.seen[1][matchID] {
+		return false
+	}
+	s.seen[0][matchID] = true
+	return true
+}
+
+// routeKey names what Resolve picks the Fleet by. Compat holds no control
+// characters (validate), so the key is unambiguous.
+func routeKey(req Request) string {
+	return req.Game + "\n" + req.Channel + "\n" + req.Compat + "\n" + req.Region
+}
+
+func (s *Service) isFull(req Request) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	until, ok := s.full[routeKey(req)]
+	if ok && !s.now().Before(until) {
+		delete(s.full, routeKey(req))
+		return false
+	}
+	return ok
+}
+
+// setFull starts the route's time as full, or ends it: an allocation on it
+// went through.
+func (s *Service) setFull(req Request, full bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if full {
+		s.full[routeKey(req)] = s.now().Add(s.fullFor)
+	} else {
+		delete(s.full, routeKey(req))
 	}
 }
 
