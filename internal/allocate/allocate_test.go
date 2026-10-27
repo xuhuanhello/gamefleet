@@ -318,55 +318,65 @@ func TestRetryFindsTheRoomAfterItsRouteIsGone(t *testing.T) {
 	}
 }
 
-// meeting holds the first lookup of a match until a second one arrives, or
-// for a while: requests that overlap both look before either allocates,
-// unless something keeps them apart.
-type meeting struct {
+// held tells the test as each lookup of a match starts, and holds the first
+// until the test lets it go.
+type held struct {
 	*clustertest.Fake
-	mu     sync.Mutex
-	looks  int
-	second chan struct{}
+	mu      sync.Mutex
+	n       int
+	looks   chan int
+	release chan struct{}
 }
 
-func (m *meeting) FindByMatch(ctx context.Context, matchID string) (*cluster.Room, error) {
-	m.mu.Lock()
-	m.looks++
-	n := m.looks
-	m.mu.Unlock()
-	switch n {
-	case 1:
-		select {
-		case <-m.second:
-		case <-time.After(300 * time.Millisecond):
-		}
-	case 2:
-		close(m.second)
+func (h *held) FindByMatch(ctx context.Context, matchID string) (*cluster.Room, error) {
+	h.mu.Lock()
+	h.n++
+	n := h.n
+	h.mu.Unlock()
+	h.looks <- n
+	if n == 1 {
+		<-h.release
 	}
-	return m.Fake.FindByMatch(ctx, matchID)
+	return h.Fake.FindByMatch(ctx, matchID)
 }
 
 // Requests for one match that overlap, such as a retry sent while a slow
 // first request still runs, get the same room.
 func TestOverlappingRequestsForOneMatchShareTheRoom(t *testing.T) {
 	svc := newService(t, clustertest.New("us-1", 0), clustertest.New("sg-1", 0))
-	svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: &meeting{Fake: clustertest.New("us-1", 8), second: make(chan struct{})}})
+	h := &held{Fake: clustertest.New("us-1", 8), looks: make(chan int, 2), release: make(chan struct{})}
+	svc.sites.Add(sites.Site{Name: "us-1", Region: "us", Cluster: h})
 	var results [2]Result
 	var errs [2]error
 	var wg sync.WaitGroup
-	for i := range 2 {
+	run := func(i int) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			results[i], errs[i] = svc.Allocate(context.Background(), request("m-1", "us", "stable"))
 		}()
 	}
+	// The first request looks for the match, and is held there.
+	run(0)
+	if n := <-h.looks; n != 1 {
+		t.Fatalf("lookup %d came first", n)
+	}
+	// The second one would look now too, but has to wait for the cluster's
+	// turn. Give it the time to get there either way, then let the first go.
+	run(1)
+	select {
+	case <-h.looks:
+		t.Error("the second request looked for the match while the first held the cluster's turn")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(h.release)
 	wg.Wait()
 	for i := range 2 {
 		if errs[i] != nil {
 			t.Fatalf("request %d: %v", i, errs[i])
 		}
 	}
-	if results[0].Room.ID != results[1].Room.ID || results[0].Created == results[1].Created {
-		t.Fatalf("results = %+v; want one room, allocated once", results)
+	if results[0].Room.ID != results[1].Room.ID || !results[0].Created || results[1].Created {
+		t.Fatalf("results = %+v; want one room, allocated by the first request", results)
 	}
 }

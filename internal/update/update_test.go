@@ -206,54 +206,51 @@ func TestDownloadAndApplyWriteRequests(t *testing.T) {
 	}
 }
 
-// Requests sent at the same time, from two tabs say, get one through. The
-// first to pass the check that the updater is idle waits there for the second
-// to pass it too, or for a while: both pass unless something keeps them apart.
+// Requests sent at the same time, from two tabs say, get one through.
 func TestOneRequestAtATime(t *testing.T) {
 	s, _ := newService(t, "2.0.0", "")
+	// A request is stamped with the time once it passed the check that the
+	// updater is idle, before it is written. The test hears of each stamp,
+	// and holds the first until it lets it go.
 	var mu sync.Mutex
-	passed := 0
-	second := make(chan struct{})
+	n := 0
+	stamps := make(chan int, 2)
+	release := make(chan struct{})
 	now := s.now
-	// The request is stamped with the time after the check, before it is
-	// written.
 	s.now = func() time.Time {
 		mu.Lock()
-		passed++
-		n := passed
+		n++
+		i := n
 		mu.Unlock()
-		switch n {
-		case 1:
-			select {
-			case <-second:
-			case <-time.After(300 * time.Millisecond):
-			}
-		case 2:
-			close(second)
+		stamps <- i
+		if i == 1 {
+			<-release
 		}
 		return now()
 	}
 	var errs [2]error
 	var wg sync.WaitGroup
-	for i := range 2 {
+	send := func(i int) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			errs[i] = s.Download("2.1.0")
 		}()
 	}
-	wg.Wait()
-	accepted := 0
-	for _, err := range errs {
-		switch {
-		case err == nil:
-			accepted++
-		case !errors.Is(err, ErrBusy):
-			t.Fatal(err)
-		}
+	send(0)
+	<-stamps
+	// The second one would pass the check now too, as nothing is written yet,
+	// but has to wait for the first. Give it the time to get there either way.
+	send(1)
+	select {
+	case <-stamps:
+		t.Error("the second request passed the check while the first was being written")
+	case <-time.After(200 * time.Millisecond):
 	}
-	if accepted != 1 {
-		t.Fatalf("%d requests accepted, want 1", accepted)
+	close(release)
+	wg.Wait()
+	if errs[0] != nil || !errors.Is(errs[1], ErrBusy) {
+		t.Fatalf("errors = %v; want the first accepted and the second busy", errs)
 	}
 }
 
