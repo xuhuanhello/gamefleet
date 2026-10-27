@@ -81,6 +81,10 @@ func main() {
 	keys := auth.NewKeys(db)
 	connect := func(store.Cluster) (cluster.API, error) { return fake, nil }
 	fleets := clusters.New(db, directory, keys, connect, "fleet.example.com", logger)
+	// The machine of the join in progress is made up: its host key too.
+	fleets.SetHostKeyReader(func(context.Context, string, int) (remote.HostKey, error) {
+		return remote.HostKey{Fingerprint: "SHA256:Qm8l2s6tYwP0xk7c3zRrJm9eN4aHq1vB5uLdT2fG8sE", File: "/etc/ssh/ssh_host_ed25519_key.pub"}, nil
+	})
 	releases := release.New(db, images, "fleet.example.com", directory, 24*time.Hour, logger)
 	if err := history(db, releases, keys, fake, fleets); err != nil {
 		log.Fatal(err)
@@ -328,7 +332,7 @@ func fakeCluster(now time.Time) *clustertest.Fake {
 	port := 20137
 	room := func(id, build, state string, created time.Time) cluster.Room {
 		port += 211
-		return cluster.Room{ID: id, State: state, Address: "203.0.113.20", Port: port, Capacity: 50,
+		return cluster.Room{ID: id, State: state, Address: "203.0.113.20", Port: port, Capacity: cluster.MaxRooms,
 			Fleet: id[:strings.LastIndex(id[:strings.LastIndex(id, "-")], "-")], Build: build, Node: worker, Game: "billiards",
 			Image: imageOf(map[string]string{"1": "3", "2": "4", "3": "5"}[build]), Created: created}
 	}
