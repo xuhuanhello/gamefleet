@@ -118,22 +118,35 @@ cd /opt/gamefleet && v=$(docker volume inspect -f "{{.Mountpoint}}" gamefleet_ga
 
 这是同一个版本里的恢复。要连版本一起退回去，用下面的"退回旧版本"，不要用这里最后的 `docker compose start`：那样起来的可能还是新版本，会把刚恢复的数据库再迁移一次。
 
-**退回旧版本：** 在线更新失败、新旧版本都没起来，或者新版本有问题要退回去时，按这个顺序做。先停更新器，免得它还在换版本时你动了数据库；再换回这次更新前的备份；最后用旧版本的部署文件和镜像重新安装，让容器按旧镜像重建：
+**退回旧版本：** 在线更新失败、新旧版本都没起来，或者新版本有问题要退回去时，分两步做。
+
+第一步，停下更新器和 GameFleet，免得更新器还在换版本时你动了数据库，再找出这次更新前的备份：
 
 ```sh
 cd /opt/gamefleet
 systemctl stop gamefleet-updater && docker compose stop gamefleet
-cat update/status.json                 # 这次更新的结果；2.1.0 起的更新器会写出备份的文件名
-v=$(docker volume inspect -f "{{.Mountpoint}}" gamefleet_gamefleet_data)
-ls -lt $v/backups/                     # 更新前的备份：gamefleet-旧版本-更新时间.db，一般是最新的一份
-rm -f $v/gamefleet.db-wal $v/gamefleet.db-shm update/request.json update/status.json
-install -o 65532 -g 65532 -m 644 $v/backups/gamefleet-2.0.5-20261027-101010.db $v/gamefleet.db
-# 换成要回到的版本
-curl -fsSL https://github.com/xuhuanhello/gamefleet/releases/download/v2.0.5/gamefleet-deploy.tar.gz | tar -xzf -
-sh install.sh --domain "$(sed -n 's/^GAMEFLEET_DOMAIN=//p' .env)" --email "$(sed -n 's/^ACME_EMAIL=//p' .env)"
+cat update/status.json   # 这次更新的结果；2.1.0 起的更新器会写出备份的文件名
+ls -lt "$(docker volume inspect -f '{{.Mountpoint}}' gamefleet_gamefleet_data)/backups/"   # gamefleet-旧版本-更新时间.db，一般是最新的一份
 ```
 
-安装脚本用旧版本的镜像重建 GameFleet 的容器，再把更新器也换成旧版本、重新启动。备份之后的改动都没有了，和上面的恢复一样。
+第二步，填上要回到的版本和那份备份的文件名，整段一起执行。哪一步失败它就停下：先下载并检查旧版本的部署文件，成功了才动数据库；最后用旧版本的安装脚本按旧镜像重建容器，再把更新器换成旧版本、重新启动。
+
+```sh
+old=2.0.5 backup=gamefleet-2.0.5-20261027-101010.db sh -eu <<'EOF'
+cd /opt/gamefleet
+v=$(docker volume inspect -f '{{.Mountpoint}}' gamefleet_gamefleet_data)
+test -s "$v/backups/$backup"
+curl -fsSL -o "/tmp/gamefleet-deploy-$old.tar.gz" "https://github.com/xuhuanhello/gamefleet/releases/download/v$old/gamefleet-deploy.tar.gz"
+tar -tzf "/tmp/gamefleet-deploy-$old.tar.gz" >/dev/null
+rm -f "$v/gamefleet.db-wal" "$v/gamefleet.db-shm" update/request.json update/status.json
+install -o 65532 -g 65532 -m 644 "$v/backups/$backup" "$v/gamefleet.db"
+tar -xzf "/tmp/gamefleet-deploy-$old.tar.gz"
+grep -qx "VERSION=$old" install.sh
+sh install.sh --domain "$(sed -n 's/^GAMEFLEET_DOMAIN=//p' .env)" --email "$(sed -n 's/^ACME_EMAIL=//p' .env)"
+EOF
+```
+
+备份之后的改动都没有了，和上面的恢复一样。
 
 **恢复演练时，别让恢复出来的 GameFleet 连上线上的集群。** 它一启动就会连上各个集群，按它那份旧数据把不认识的部署缩到 0 再删掉。
 
@@ -147,11 +160,11 @@ sh install.sh --domain "$(sed -n 's/^GAMEFLEET_DOMAIN=//p' .env)" --email "$(sed
   iptables -I DOCKER-USER -d 203.0.113.7 -j REJECT           # 每个地址一条；装好 Docker 以后才有这条链
   ```
 
-  然后先只建容器和网络、不启动，从 GameFleet 所在的容器网络试一下，确实连不上再启动：
+  然后先只建容器和网络、不启动，从 GameFleet 所在的容器网络试一下，确实连不上再启动。集群用自己的证书，所以用 `-k`；只有"连接被拒绝"或者超时才算挡住了，拿到任何 HTTP 回应（比如 401）都是没挡住。拉不下 curl 的镜像、证书报错这类失败都不算，说明还没试成：
 
   ```sh
   cd /opt/gamefleet && docker compose create
-  docker run --rm --network gamefleet_default curlimages/curl -sS -m 5 https://203.0.113.7:6443   # 要失败
+  docker run --rm --network gamefleet_default curlimages/curl -k -sS -m 5 https://203.0.113.7:6443   # 要看到 refused 或 timed out
   docker compose up -d
   ```
 
