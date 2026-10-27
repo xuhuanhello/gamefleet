@@ -537,7 +537,9 @@ func (c *Console) createKey(w http.ResponseWriter, r *http.Request, p page) {
 	case "", "0":
 	case "1", "7", "30":
 		n, _ := strconv.Atoi(days)
-		expires = c.now().AddDate(0, 0, n)
+		// Days of 24 hours: AddDate counts in the local time zone, where a
+		// day around a clock change is 23 or 25 hours.
+		expires = c.now().Add(time.Duration(n) * 24 * time.Hour)
 	default:
 		c.renderKeys(w, r, p, http.StatusBadRequest, keysPage{Err: "有效期只能选 1、7、30 天或不过期"})
 		return
