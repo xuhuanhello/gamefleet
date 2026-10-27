@@ -431,12 +431,14 @@ func TestAllocationPassesByAGameServerFullOfNotes(t *testing.T) {
 	}
 }
 
-// gated is a cluster with no room while shut. It counts what it is asked, and
-// when hold is set the next allocation closes held and waits for hold.
+// gated is a cluster with no room while shut, and for the next failNext
+// allocations. It counts what it is asked, and when hold is set the next
+// allocation closes held and waits for hold.
 type gated struct {
 	*clustertest.Fake
 	mu         sync.Mutex
 	shut       bool
+	failNext   int
 	asked      int
 	hold, held chan struct{}
 }
@@ -451,8 +453,11 @@ func (g *gated) Rooms(ctx context.Context) ([]cluster.Room, error) {
 func (g *gated) Allocate(ctx context.Context, a cluster.Allocation) (cluster.Room, error) {
 	g.mu.Lock()
 	g.asked++
-	shut, hold, held := g.shut, g.hold, g.held
+	shut, hold, held := g.shut || g.failNext > 0, g.hold, g.held
 	g.hold = nil
+	if g.failNext > 0 {
+		g.failNext--
+	}
 	g.mu.Unlock()
 	if hold != nil {
 		close(held)
@@ -516,17 +521,21 @@ func TestANewMatchOnAFullRouteIsTurnedAwayAtOnce(t *testing.T) {
 	}
 }
 
-// A retry finds the room its match got even while the route counts as full,
-// and an allocation that goes through ends the route's time as full.
-func TestAMatchAskedAboutBeforeIsLookedForWhileItsRouteIsFull(t *testing.T) {
+// A match that has its room gets it while its route counts as full, even from
+// a GameFleet that has just started; and an allocation that goes through ends
+// the route's time as full.
+func TestAMatchWithARoomGetsItWhileItsRouteIsFull(t *testing.T) {
 	g := &gated{Fake: clustertest.New("us-1", 1)}
 	svc, _ := gatedService(t, g)
 	ctx := context.Background()
-
 	first, err := svc.Allocate(ctx, request("m-1", "us", "stable"))
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// GameFleet restarted, and the first match it is asked for finds the
+	// route full.
+	svc, clock := gatedService(t, g)
 	if _, err := svc.Allocate(ctx, request("m-2", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("m-2: err = %v, want ErrNoCapacity", err)
 	}
@@ -534,15 +543,20 @@ func TestAMatchAskedAboutBeforeIsLookedForWhileItsRouteIsFull(t *testing.T) {
 	if err != nil || again.Created || again.Room.ID != first.Room.ID {
 		t.Fatalf("m-1 again = %+v, %v; want its room %s", again, err, first.Room.ID)
 	}
-
-	// Game servers became Ready, and m-2's retry got one; m-3, new, need not
-	// wait out FullFor for the other.
-	g.Fake = clustertest.New("us-1", 2)
-	if _, err := svc.Allocate(ctx, request("m-2", "us", "stable")); err != nil {
-		t.Fatalf("m-2 again: %v", err)
+	if _, err := svc.Allocate(ctx, request("m-3", "us", "stable")); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("m-3: err = %v, want ErrNoCapacity", err)
 	}
-	if _, err := svc.Allocate(ctx, request("m-3", "us", "stable")); err != nil {
-		t.Fatalf("m-3 after an allocation went through: %v", err)
+
+	// A game server becomes Ready while m-4 waits between its tries; m-5 need
+	// not wait out FullFor for the other.
+	*clock = clock.Add(FullFor)
+	g.Fake = clustertest.New("us-1", 2)
+	g.failNext = 1
+	if _, err := svc.Allocate(ctx, request("m-4", "us", "stable")); err != nil {
+		t.Fatalf("m-4: %v", err)
+	}
+	if _, err := svc.Allocate(ctx, request("m-5", "us", "stable")); err != nil {
+		t.Fatalf("m-5 after an allocation went through: %v", err)
 	}
 }
 
@@ -553,6 +567,13 @@ func TestMatchesWaitingForTheTurnAreTurnedAwayWhenTheRouteIsFound(t *testing.T) 
 	svc, _ := gatedService(t, g)
 	ctx := context.Background()
 	hold := g.hold
+	queued := make(chan struct{}, 1)
+	svc.queued = func() {
+		select {
+		case queued <- struct{}{}:
+		default:
+		}
+	}
 
 	errs := make(chan error, 2)
 	go func() {
@@ -564,7 +585,7 @@ func TestMatchesWaitingForTheTurnAreTurnedAwayWhenTheRouteIsFound(t *testing.T) 
 		_, err := svc.Allocate(ctx, request("m-2", "us", "stable"))
 		errs <- err
 	}()
-	time.Sleep(20 * time.Millisecond) // m-2 waits for the turn
+	<-queued // m-2 found the route not full yet, and waits for the turn
 	close(hold)
 	for range 2 {
 		if err := <-errs; !errors.Is(err, ErrNoCapacity) {

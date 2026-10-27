@@ -80,3 +80,34 @@ func TestTextKeepsLinesAndCutsLongOnes(t *testing.T) {
 		t.Errorf("long line: %d bytes, ends %q", len(lines[1]), lines[1][len(lines[1])-12:])
 	}
 }
+
+// A secret of several lines is hidden on each line it is printed on.
+func TestTextHidesASecretOfSeveralLines(t *testing.T) {
+	pem := "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIBx3J0m0v9n4p1y6ZqXc7gHkQe2ZtVfG\n-----END PRIVATE KEY-----\n"
+	p := New().With([]Secret{{Name: "runtime:billiards:TICKET_PRIVATE", Value: pem}})
+	got := p.Text("loading key\n" + strings.ReplaceAll(pem, "\n", "\r\n") + "done\n")
+	if strings.Contains(got, "MC4CAQAw") || strings.Contains(got, "BEGIN PRIVATE") {
+		t.Fatalf("the key shows:\n%s", got)
+	}
+	if !strings.Contains(got, "loading key\n") || !strings.Contains(got, "[runtime:billiards:TICKET_PRIVATE]") || !strings.HasSuffix(got, "done\n") {
+		t.Fatalf("got:\n%s", got)
+	}
+}
+
+// Values named like credentials that GameFleet does not know are hidden too.
+func TestLineHidesUnknownNamedValues(t *testing.T) {
+	p := New().With(nil)
+	cases := map[string]string{
+		"connect key=0f3a9c2e77 to us":       "connect key=[hidden] to us",
+		"secret='abc def' left":              "secret='[hidden]' left",
+		`opened "token": "half`:              `opened "token": "[hidden]`,
+		`config {"server_key": "zz-1234"}`:   `config {"server_key": "[hidden]"}`,
+		"token = 'k10abc' and matchId=m-1":   "token = '[hidden]' and matchId=m-1",
+		"run --api-key sk-12345 --region us": "run --api-key [hidden] --region us",
+	}
+	for in, want := range cases {
+		if got := p.Line(in); got != want {
+			t.Errorf("%q:\n got %q\nwant %q", in, got, want)
+		}
+	}
+}

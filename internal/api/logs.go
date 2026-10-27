@@ -44,7 +44,12 @@ func (h *handler) logRoutes(mux *http.ServeMux) {
 				writeError(w, http.StatusTooManyRequests, "rate_limited", "每把 key 每分钟最多读 60 次")
 				return
 			}
-			h.log.Info("logs read", "caller", caller.Name, "path", r.URL.Path, "query", r.URL.RawQuery)
+			// The query as far as a real one goes: the caller chooses it.
+			query := r.URL.RawQuery
+			if len(query) > 200 {
+				query = query[:200] + "…"
+			}
+			h.log.Info("logs read", "caller", caller.Name, "path", r.URL.Path, "query", query)
 			next(w, r, caller)
 		}, auth.ScopeLogs)
 	}

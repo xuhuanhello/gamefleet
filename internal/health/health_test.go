@@ -154,7 +154,7 @@ func TestStuckGameServers(t *testing.T) {
 	c := &clock{time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
 	m := New(c.now, nil)
 	servers := func() Check { t.Helper(); return check(t, m.Check(nil, []string{"us-1"}), "gameservers us-1") }
-	if s := servers(); !s.OK {
+	if s := servers(); !s.OK || !strings.Contains(s.Detail, "还没看过") {
 		t.Fatalf("nothing seen yet: %+v", s)
 	}
 	m.Starting("us-1", []Starting{{State: "Scheduled", Created: c.t.Add(-time.Minute)}})
@@ -175,7 +175,14 @@ func TestStuckGameServers(t *testing.T) {
 		t.Fatalf("one stuck on a node: %+v", s)
 	}
 	m.Starting("us-1", nil)
-	if s := servers(); !s.OK {
+	if s := servers(); !s.OK || s.Detail != "没有卡住的战斗服" {
 		t.Fatalf("all up: %+v", s)
+	}
+	// GameFleet lost the cluster with a stuck game server in view: the
+	// cluster's check fails, this one cannot tell.
+	m.Starting("us-1", []Starting{{State: "Starting", Created: c.t.Add(-StuckGameServer - time.Minute)}})
+	c.t = c.t.Add(StaleCluster + time.Second)
+	if s := servers(); !s.OK || !strings.Contains(s.Detail, "判断不了") {
+		t.Fatalf("cluster lost: %+v", s)
 	}
 }

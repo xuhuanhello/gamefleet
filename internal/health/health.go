@@ -55,9 +55,9 @@ type Monitor struct {
 
 	mu       sync.Mutex
 	started  time.Time
-	passes   map[string]pass       // by loop
-	contacts map[string]contact    // cluster: when GameFleet last reached it
-	starting map[string][]Starting // cluster: its game servers not Ready yet
+	passes   map[string]pass    // by loop
+	contacts map[string]contact // cluster: when GameFleet last reached it
+	starting map[string]seen    // cluster: its game servers not Ready yet
 	allocs   []allocation
 }
 
@@ -79,6 +79,12 @@ type Starting struct {
 	Created time.Time
 }
 
+// seen is what the release loop last found, and when.
+type seen struct {
+	at       time.Time
+	starting []Starting
+}
+
 type allocation struct {
 	at     time.Time
 	took   time.Duration
@@ -89,7 +95,7 @@ type allocation struct {
 // backups to watch.
 func New(now func() time.Time, newestBackup func() (time.Time, error)) *Monitor {
 	return &Monitor{now: now, newestBackup: newestBackup, started: now(), passes: map[string]pass{}, contacts: map[string]contact{},
-		starting: map[string][]Starting{}}
+		starting: map[string]seen{}}
 }
 
 // Pass records that a loop got through a pass, and whether the pass had an
@@ -133,7 +139,7 @@ func (m *Monitor) Starting(cluster string, servers []Starting) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.starting[cluster] = servers
+	m.starting[cluster] = seen{at: m.now(), starting: servers}
 }
 
 // Allocation records one allocation: how long it took and whether it failed
@@ -279,9 +285,20 @@ func (m *Monitor) Check(loops, clusters []string) Status {
 	return Status{OK: !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK }), Checks: checks}
 }
 
-// stuck checks the cluster's game servers that are not Ready yet.
-func stuck(cluster string, starting []Starting, now time.Time) Check {
+// stuck checks the cluster's game servers that are not Ready yet. What was
+// found before GameFleet lost the cluster tells nothing of now; the cluster's
+// own check fails then.
+func stuck(cluster string, last seen, now time.Time) Check {
 	c := Check{Name: "gameservers " + cluster, OK: true, Detail: "没有卡住的战斗服"}
+	switch {
+	case last.at.IsZero():
+		c.Detail = "还没看过这个集群的战斗服"
+		return c
+	case now.Sub(last.at) > StaleCluster:
+		c.Detail = fmt.Sprintf("%s 前看过以后就连不上这个集群了，现在判断不了", age(now.Sub(last.at)))
+		return c
+	}
+	starting := last.starting
 	var n int
 	var oldest Starting
 	for _, s := range starting {

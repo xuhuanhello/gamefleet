@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestBookKeepsTheNewestLines(t *testing.T) {
@@ -40,5 +41,23 @@ func TestBookPicksWarnings(t *testing.T) {
 	got := b.Read(time.Time{}, 10, true)
 	if len(got) != 2 || !strings.Contains(got[0], "allocation failed") || !strings.Contains(got[1], "cluster unreachable") {
 		t.Fatalf("warnings = %q", got)
+	}
+}
+
+func TestBookKeepsWithinItsBytes(t *testing.T) {
+	b := New(100, time.Now)
+	b.budget = 30
+	for i := range 4 {
+		fmt.Fprintf(b, "line %04d\n", i) // 9 bytes
+	}
+	if got := b.Read(time.Time{}, 10, false); !slices.Equal(got, []string{"line 0001", "line 0002", "line 0003"}) {
+		t.Fatalf("got %q", got)
+	}
+
+	b = New(100, time.Now)
+	fmt.Fprintln(b, strings.Repeat("é", 3000))
+	got := b.Read(time.Time{}, 10, false)
+	if len(got) != 1 || len(got[0]) > maxLine || !utf8.ValidString(got[0]) || !strings.HasPrefix(got[0], "éé") {
+		t.Fatalf("a long line kept as %d bytes, valid %v", len(got[0]), utf8.ValidString(got[0]))
 	}
 }

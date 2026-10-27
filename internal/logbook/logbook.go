@@ -8,15 +8,27 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
-// Book is a ring of log lines. It is an io.Writer: each write is one or more
+const (
+	// MaxBytes is the most text the book keeps, however many lines that is:
+	// a line can be as long as what a caller asked for.
+	MaxBytes = 8 << 20
+	// maxLine is how much of a line the book keeps. The logs API shows less.
+	maxLine = 4 << 10
+)
+
+// Book is the newest log lines. It is an io.Writer: each write is one or more
 // whole lines, as log/slog's handlers write them.
 type Book struct {
-	mu    sync.Mutex
-	lines []line
-	next  int // where the next line goes once the ring is full
-	now   func() time.Time
+	mu     sync.Mutex
+	lines  []line // oldest first, from lines[first]
+	first  int
+	bytes  int // of the kept lines' text
+	size   int
+	budget int
+	now    func() time.Time
 }
 
 type line struct {
@@ -24,9 +36,9 @@ type line struct {
 	text string
 }
 
-// New returns a book that keeps the newest size lines.
+// New returns a book that keeps the newest size lines, and at most MaxBytes.
 func New(size int, now func() time.Time) *Book {
-	return &Book{lines: make([]line, 0, size), now: now}
+	return &Book{size: size, budget: MaxBytes, now: now}
 }
 
 func (b *Book) Write(p []byte) (int, error) {
@@ -37,13 +49,25 @@ func (b *Book) Write(p []byte) (int, error) {
 		if len(text) == 0 {
 			continue
 		}
-		l := line{at: at, text: string(text)}
-		if len(b.lines) < cap(b.lines) {
-			b.lines = append(b.lines, l)
-			continue
+		if len(text) > maxLine {
+			cut := maxLine
+			for cut > 0 && !utf8.RuneStart(text[cut]) {
+				cut--
+			}
+			text = text[:cut]
 		}
-		b.lines[b.next] = l
-		b.next = (b.next + 1) % len(b.lines)
+		b.lines = append(b.lines, line{at: at, text: string(text)})
+		b.bytes += len(text)
+		for len(b.lines)-b.first > b.size || b.bytes > b.budget {
+			b.bytes -= len(b.lines[b.first].text)
+			b.lines[b.first] = line{}
+			b.first++
+		}
+		// Move the kept lines to the front once more than half are gone.
+		if b.first > len(b.lines)/2 {
+			b.lines = append(b.lines[:0], b.lines[b.first:]...)
+			b.first = 0
+		}
 	}
 	return len(p), nil
 }
@@ -55,8 +79,8 @@ func (b *Book) Read(since time.Time, n int, warnings bool) []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var out []string
-	for i := range b.lines {
-		l := b.lines[(b.next+len(b.lines)-1-i)%len(b.lines)]
+	for i := len(b.lines) - 1; i >= b.first; i-- {
+		l := b.lines[i]
 		if len(out) == n || l.at.Before(since) {
 			break
 		}

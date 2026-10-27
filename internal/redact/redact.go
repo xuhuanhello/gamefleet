@@ -38,10 +38,13 @@ var (
 	jwt  = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}`)
 	// The credential after an HTTP authorization scheme.
 	scheme = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
-	// A value named like a credential: password=…, "token": "…", ?key=….
-	named = regexp.MustCompile(`(?i)([a-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|credential|signature|ticket)[a-z0-9_.-]*"?\s*[=:]\s*"?)([^\s"',;&}]+)`)
+	// A value named like a credential: password=…, "token": "…", ?key=…,
+	// secret='…'. Any name with "key" in it counts, though it hides some
+	// that are none. A quoted value is hidden to its closing quote. Neither
+	// rule takes a known secret's marker (NUL), which keeps its name.
+	named = regexp.MustCompile(`(?i)([a-z0-9_.-]*(?:password|passwd|secret|token|key|credential|signature|ticket)[a-z0-9_.-]*['"]?\s*[=:]\s*)('[^'\x00]*'|"[^"\x00]*"|['"]?[^\s"',;&}\x00]+)`)
 	// The same as a command line flag: --token …, -password ….
-	flag  = regexp.MustCompile(`(?i)(\s--?[a-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|credential|signature|ticket)[a-z0-9_.-]*\s+)([^\s-]\S*)`)
+	flag  = regexp.MustCompile(`(?i)(\s--?[a-z0-9_.-]*(?:password|passwd|secret|token|key|credential|signature|ticket)[a-z0-9_.-]*\s+)([^\s\x00-]\S*)`)
 	email = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
 	ipv4  = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 	// Candidates only: netip decides what is an IPv6 address.
@@ -72,8 +75,18 @@ type Pass struct {
 
 // With returns a pass that also hides the secrets' values.
 func (r *Redactor) With(secrets []Secret) *Pass {
+	// A value of several lines, such as a PEM key, also line by line: a pass
+	// sees one line at a time.
+	var list []Secret
+	for _, s := range secrets {
+		list = append(list, s)
+		if strings.Contains(s.Value, "\n") {
+			for _, line := range strings.Split(s.Value, "\n") {
+				list = append(list, Secret{Name: s.Name, Value: strings.TrimSpace(line)})
+			}
+		}
+	}
 	// Longer values first, so that a secret containing another is hidden whole.
-	list := slices.Clone(secrets)
 	slices.SortFunc(list, func(a, b Secret) int { return len(b.Value) - len(a.Value) })
 	var markers, names []string
 	for i, s := range list {
@@ -106,7 +119,7 @@ func (p *Pass) Line(line string) string {
 	line = p.markers.Replace(line)
 	line = jwt.ReplaceAllString(line, "[token]")
 	line = scheme.ReplaceAllString(line, "$1$2[hidden]")
-	line = named.ReplaceAllString(line, "$1[hidden]")
+	line = named.ReplaceAllStringFunc(line, hideNamed)
 	line = flag.ReplaceAllString(line, "$1[hidden]")
 	line = email.ReplaceAllStringFunc(line, func(s string) string { return p.r.pseudonym("email", strings.ToLower(s)) })
 	line = ipv4.ReplaceAllStringFunc(line, p.address)
@@ -120,6 +133,19 @@ func (p *Pass) Line(line string) string {
 		line = line[:cut] + " …[cut]"
 	}
 	return line
+}
+
+// hideNamed hides the value of a named match, and keeps its quotes.
+func hideNamed(match string) string {
+	m := named.FindStringSubmatch(match)
+	name, value := m[1], m[2]
+	if q := value[:1]; q == "'" || q == `"` {
+		if len(value) > 1 && strings.HasSuffix(value, q) {
+			return name + q + "[hidden]" + q
+		}
+		return name + q + "[hidden]"
+	}
+	return name + "[hidden]"
 }
 
 // address replaces a public IP address with its pseudonym. Private,

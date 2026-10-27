@@ -41,11 +41,6 @@ const (
 	// gave up on them before their turn came. A place that frees up waits at
 	// most this long.
 	FullFor = 2 * time.Second
-	// seenFor is how long a match ID is remembered. A match asked about
-	// before is always looked for in the cluster, so a retry finds the room
-	// it got even while its route counts as full. Nakama gives up on a match
-	// after 30 seconds.
-	seenFor = time.Minute
 )
 
 // Request asks for a room for one match.
@@ -88,16 +83,22 @@ type Service struct {
 	// a game server at most one new match per allocation batch, so matches
 	// allocated together spread over game servers, or find none and fail.
 	turns sync.Map
+	// queued, when set, is called when an allocation starts to wait for a
+	// cluster's turn that another holds. For tests.
+	queued func()
 
 	now     func() time.Time
 	fullFor time.Duration
 	mu      sync.Mutex
-	// full: until when each route counts as full, by routeKey.
-	full map[string]time.Time
-	// seen: the match IDs asked about since seenSince, and in the seenFor
-	// before it.
-	seen      [2]map[string]bool
-	seenSince time.Time
+	// full: the routes Agones found full lately, by routeKey.
+	full map[string]fullRoute
+}
+
+// fullRoute is a route Agones found full: until when it counts as full, and
+// the cluster's game servers as they were then.
+type fullRoute struct {
+	until time.Time
+	rooms []cluster.Room
 }
 
 var (
@@ -112,7 +113,7 @@ var (
 // New builds the service from the router and the clusters.
 func New(router Router, dir *sites.Directory) *Service {
 	return &Service{router: router, sites: dir, retryWait: 25 * time.Millisecond, capacityWait: 300 * time.Millisecond,
-		now: time.Now, fullFor: FullFor, full: map[string]time.Time{}, seen: [2]map[string]bool{{}, {}}}
+		now: time.Now, fullFor: FullFor, full: map[string]fullRoute{}}
 }
 
 // Allocate returns the room for the match, allocating one only if the match
@@ -133,12 +134,11 @@ func (s *Service) Allocate(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	newMatch := s.firstAsk(req.MatchID)
 	contended, full := 0, 0
 	for {
 		// A new match on a full route is turned away; but not by the request
 		// that found it full, which looks again after its waits below.
-		result, err := s.attempt(ctx, site, req, players, newMatch && full == 0)
+		result, err := s.attempt(ctx, site, req, players, full == 0)
 		var wait time.Duration
 		switch {
 		case errors.Is(err, errFull):
@@ -219,11 +219,11 @@ func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, pla
 	})
 	if err != nil {
 		if errors.Is(err, cluster.ErrNoCapacity) {
-			s.setFull(req, true)
+			s.markFull(req, rooms)
 		}
 		return Result{}, err
 	}
-	s.setFull(req, false)
+	s.clearFull(req)
 	room.Build = strconv.FormatInt(target.Build, 10)
 	return Result{Room: room, Created: true}, nil
 }
@@ -236,24 +236,17 @@ func (s *Service) turn(ctx context.Context, cluster string) (func(), error) {
 	select {
 	case turn <- struct{}{}:
 		return func() { <-turn }, nil
+	default:
+	}
+	if s.queued != nil {
+		s.queued()
+	}
+	select {
+	case turn <- struct{}{}:
+		return func() { <-turn }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-// firstAsk records that the match was asked about, and reports whether it
-// was the first time in seenFor.
-func (s *Service) firstAsk(matchID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if now := s.now(); now.Sub(s.seenSince) >= seenFor {
-		s.seen[0], s.seen[1], s.seenSince = map[string]bool{}, s.seen[0], now
-	}
-	if s.seen[0][matchID] || s.seen[1][matchID] {
-		return false
-	}
-	s.seen[0][matchID] = true
-	return true
 }
 
 // routeKey names what Resolve picks the Fleet by. Compat holds no control
@@ -262,27 +255,38 @@ func routeKey(req Request) string {
 	return req.Game + "\n" + req.Channel + "\n" + req.Compat + "\n" + req.Region
 }
 
+// isFull reports whether the route counts as full and the match was in none
+// of the cluster's game servers when it was found full. GameFleet alone
+// allocates in the cluster, one allocation at a time, and one that goes
+// through ends the route's time as full: so a match that was not there has
+// no room yet. One that was there, asked about again because an answer got
+// lost or GameFleet restarted, is looked for as usual.
 func (s *Service) isFull(req Request) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	until, ok := s.full[routeKey(req)]
-	if ok && !s.now().Before(until) {
-		delete(s.full, routeKey(req))
-		return false
-	}
-	return ok
+	f, ok := s.full[routeKey(req)]
+	return ok && s.now().Before(f.until) && cluster.FindMatch(f.rooms, req.MatchID) == nil
 }
 
-// setFull starts the route's time as full, or ends it: an allocation on it
-// went through.
-func (s *Service) setFull(req Request, full bool) {
+// markFull starts the route's time as full, with the game servers the
+// allocation saw, and forgets the routes whose time is over.
+func (s *Service) markFull(req Request, rooms []cluster.Room) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if full {
-		s.full[routeKey(req)] = s.now().Add(s.fullFor)
-	} else {
-		delete(s.full, routeKey(req))
+	now := s.now()
+	for key, f := range s.full {
+		if !now.Before(f.until) {
+			delete(s.full, key)
+		}
 	}
+	s.full[routeKey(req)] = fullRoute{until: now.Add(s.fullFor), rooms: rooms}
+}
+
+// clearFull ends the route's time as full: an allocation on it went through.
+func (s *Service) clearFull(req Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.full, routeKey(req))
 }
 
 // Room returns the room with this id from whichever cluster has it, or nil.
