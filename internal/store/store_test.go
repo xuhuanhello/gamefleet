@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -238,4 +241,72 @@ func TestClustersAndVars(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func runtimeGames(t *testing.T, s *Store) []string {
+	t.Helper()
+	var games []string
+	if err := s.View(context.Background(), func(tx *Tx) error {
+		var err error
+		games, err = tx.RuntimeGames()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return games
+}
+
+// A game stays among those with runtime settings once it had one, also after
+// its last variable is deleted: its Secret must be emptied, build or not.
+func TestAGameKeepsItsRuntimeSecretAfterItsLastVariable(t *testing.T) {
+	s := open(t)
+	err := s.Update(context.Background(), func(tx *Tx) error {
+		if err := tx.PutVar(Var{Game: "chess", Name: "A", Value: "1", UpdatedBy: "admin"}); err != nil {
+			return err
+		}
+		return tx.DeleteVar("chess", "A")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runtimeGames(t, s); !slices.Equal(got, []string{"chess"}) {
+		t.Fatalf("runtime games = %v", got)
+	}
+}
+
+// Opening a database of an earlier GameFleet finds every game that had
+// runtime settings: those with variables, and, from the audit log, those
+// whose variables were all deleted before.
+func TestUpgradeFindsEveryGameThatHadRuntimeSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gamefleet.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(schema) - 1 // the database as the version before this one left it
+	for _, m := range schema[:before] {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		fmt.Sprintf("PRAGMA user_version = %d", before),
+		`INSERT INTO runtime_vars (game, name, value, updated_at, updated_by) VALUES ('billiards', 'A', '1', 0, 'admin')`,
+		`INSERT INTO audit_log (at, actor, action, target, detail) VALUES
+			(0, 'admin', 'runtime.set', 'chess A', ''), (0, 'admin', 'runtime.delete', 'chess A', ''),
+			(0, 'admin', 'runtime.delete', 'go B', ''), (0, 'admin', 'route.set', 'poker stable net7', '')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := runtimeGames(t, s); !slices.Equal(got, []string{"billiards", "chess", "go"}) {
+		t.Fatalf("runtime games = %v", got)
+	}
 }

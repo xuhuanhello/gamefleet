@@ -239,6 +239,16 @@ CREATE TABLE runtime_vars (
 `, `
 -- Game servers run several matches each. Deployments made before ran one.
 ALTER TABLE deployments ADD COLUMN rooms INTEGER NOT NULL DEFAULT 1;
+`, `
+-- Every game that ever had a runtime setting: its Secret is written, empty
+-- once its last setting is gone, whether or not it has a build. The games
+-- whose settings were all deleted before come from the audit log, where a
+-- setting's target is "<game> <name>".
+CREATE TABLE runtime_games (game TEXT PRIMARY KEY);
+INSERT OR IGNORE INTO runtime_games (game) SELECT game FROM runtime_vars;
+INSERT OR IGNORE INTO runtime_games (game)
+	SELECT substr(target, 1, instr(target, ' ') - 1) FROM audit_log
+	WHERE action IN ('runtime.set', 'runtime.delete') AND instr(target, ' ') > 1;
 `}
 
 func (s *Store) migrate() error {
@@ -615,9 +625,9 @@ func (t *Tx) Vars(game string) ([]Var, error) {
 }
 
 // RuntimeGames lists the games whose game servers load runtime settings, by
-// name: every game with a build or a variable.
+// name: every game with a build, or that ever had a variable.
 func (t *Tx) RuntimeGames() ([]string, error) {
-	rows, err := t.tx.QueryContext(t.ctx, `SELECT game FROM builds UNION SELECT game FROM runtime_vars ORDER BY game`)
+	rows, err := t.tx.QueryContext(t.ctx, `SELECT game FROM builds UNION SELECT game FROM runtime_games ORDER BY game`)
 	if err != nil {
 		return nil, err
 	}
@@ -628,8 +638,12 @@ func (t *Tx) RuntimeGames() ([]string, error) {
 	})
 }
 
-// PutVar creates or replaces a variable as of the transaction's time.
+// PutVar creates or replaces a variable as of the transaction's time, and
+// counts its game among RuntimeGames for good.
 func (t *Tx) PutVar(v Var) error {
+	if _, err := t.tx.ExecContext(t.ctx, `INSERT OR IGNORE INTO runtime_games (game) VALUES (?)`, v.Game); err != nil {
+		return err
+	}
 	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runtime_vars (game, name, value, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (game, name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
 		v.Game, v.Name, v.Value, millis(t.now), v.UpdatedBy)

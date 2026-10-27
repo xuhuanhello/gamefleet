@@ -260,14 +260,10 @@ func TestRuntimeVars(t *testing.T) {
 		t.Error("deleting a missing variable")
 	}
 	// Deleting a variable takes it out of the Secret, and deleting the last
-	// one leaves the Secret of a game with builds empty rather than holding
-	// the old values.
-	if err := f.store.Update(ctx, func(tx *store.Tx) error {
-		_, err := tx.InsertBuild(store.Build{Game: "billiards", Digest: "sha256:aaa", Tag: "141", Compat: "net7", Port: 7770, Protocol: "UDP", RegisteredBy: "key:ci"})
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
+	// one leaves the Secret empty rather than holding the old values, though
+	// the game has no build yet. A GameFleet started afresh still knows.
+	f.svc = New(f.store, f.dir, f.keys, func(store.Cluster) (cluster.API, error) { return us, nil }, "fleet.example.com",
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for _, key := range []string{"NAKAMA_URL", "NAKAMA_HTTP_KEY"} {
 		if err := f.svc.DeleteVar(ctx, "billiards", key, "admin"); err != nil {
 			t.Fatal(err)
