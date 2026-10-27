@@ -70,6 +70,9 @@ type Service struct {
 	readHostKey HostKeyReader
 	appearWait  time.Duration
 
+	// changing serializes changes to one cluster's connection, by name.
+	changing sync.Map
+
 	// retiring is held by a pass that works on retiring machines, and by
 	// Keep: the loop never removes a machine that Keep just said it kept.
 	retiring sync.Mutex
@@ -431,6 +434,7 @@ func (s *Service) Update(ctx context.Context, c Connection, actor string) error 
 	if err != nil {
 		return err
 	}
+	defer s.lockCluster(c.Name)()
 	old, ok, err := s.Stored(ctx, c.Name)
 	if err != nil {
 		return err
@@ -482,50 +486,60 @@ func (s *Service) Update(ctx context.Context, c Connection, actor string) error 
 	return nil
 }
 
-// pullKeyNames are the two names a cluster's pull key takes in turn: a new
-// key gets the one not in use, and the old key goes only once the cluster
-// has the new one, so a failure on the way leaves image pulls working.
-func pullKeyNames(cluster string) [2]string { return [2]string{"pull-" + cluster, "pull2-" + cluster} }
+// A cluster's pull key is named pk-<6 random characters>-<cluster>, a new
+// name each time, so that a renewal that stops half way leaves keys that are
+// told apart. Clusters joined before had pull-<cluster>, or pull2-<cluster>.
+const pullKeyPrefix = "pk-"
 
-// renewPullKey makes a new pull key for the cluster, writes it into the
-// cluster, and then revokes the one before.
+// PullKeyCluster returns the cluster whose pull key the name is, among the
+// clusters given.
+func PullKeyCluster(keyName string, clusters []string) (string, bool) {
+	if rest, ok := strings.CutPrefix(keyName, pullKeyPrefix); ok && len(rest) > 7 && rest[6] == '-' {
+		return rest[7:], slices.Contains(clusters, rest[7:])
+	}
+	for _, c := range clusters {
+		if keyName == "pull-"+c || keyName == "pull2-"+c {
+			return c, true
+		}
+	}
+	return "", false
+}
+
+// renewPullKey makes the cluster a new pull key and writes it into the
+// cluster; once the cluster has it, it revokes the cluster's other pull
+// keys. When writing fails the new key stays too: the cluster may have it
+// all the same, its answer lost. The next renewal that succeeds revokes it.
 func (s *Service) renewPullKey(ctx context.Context, api cluster.API, clusterName, actor string) error {
-	keys, err := s.keys.List(ctx)
-	if err != nil {
-		return err
-	}
-	names := pullKeyNames(clusterName)
-	created := map[string]time.Time{}
-	for _, k := range keys {
-		if k.Name == names[0] || k.Name == names[1] {
-			created[k.Name] = k.Created
-		}
-	}
-	// The newest is the one the cluster has; the other name is free, or
-	// holds a key left by a renewal that stopped half way.
-	current, next := names[0], names[1]
-	if _, ok := created[current]; !ok || created[next].After(created[current]) {
-		current, next = next, current
-	}
-	if _, ok := created[next]; ok {
-		if err := s.keys.Revoke(ctx, next, actor); err != nil {
-			return err
-		}
-	}
-	key, err := s.keys.Create(ctx, next, []string{auth.ScopePull}, actor)
+	name := pullKeyPrefix + random(4)[:6] + "-" + clusterName
+	key, err := s.keys.Create(ctx, name, []string{auth.ScopePull}, actor)
 	if err != nil {
 		return err
 	}
 	if err := api.ApplySecret(ctx, cluster.PullSecret(s.host, key)); err != nil {
-		_ = s.keys.Revoke(ctx, next, actor)
 		return refuse("写不进拉取镜像用的 Secret：%v", err)
 	}
-	if _, ok := created[current]; ok {
-		if err := s.keys.Revoke(ctx, current, actor); err != nil {
-			s.log.Error("could not revoke the old pull key", "cluster", clusterName, "key", current, "error", err)
+	keys, err := s.keys.List(ctx)
+	if err != nil {
+		s.log.Error("could not list the old pull keys", "cluster", clusterName, "error", err)
+		return nil
+	}
+	for _, k := range keys {
+		if c, ok := PullKeyCluster(k.Name, []string{clusterName}); ok && c == clusterName && k.Name != name {
+			if err := s.keys.Revoke(ctx, k.Name, actor); err != nil {
+				s.log.Error("could not revoke an old pull key", "cluster", clusterName, "key", k.Name, "error", err)
+			}
 		}
 	}
 	return nil
+}
+
+// lockCluster serializes the changes to one cluster's connection and pull
+// key. Call the function it returns when done.
+func (s *Service) lockCluster(name string) func() {
+	v, _ := s.changing.LoadOrStore(name, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // Add connects to a new cluster, gives it a pull key and stores it. Adding
@@ -536,6 +550,7 @@ func (s *Service) Add(ctx context.Context, c Connection, actor string) error {
 	if err != nil {
 		return err
 	}
+	defer s.lockCluster(c.Name)()
 	if old, ok, err := s.Stored(ctx, c.Name); err != nil {
 		return err
 	} else if ok {

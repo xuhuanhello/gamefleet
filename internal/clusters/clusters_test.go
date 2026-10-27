@@ -122,7 +122,7 @@ func TestJoinAClusterWithACode(t *testing.T) {
 	}
 	json.Unmarshal(pull.Data[".dockerconfigjson"], &config)
 	caller, ok := f.keys.Check(ctx, config.Auths["fleet.example.com"].Password)
-	if !ok || caller.Name != "pull-sg-1" || !caller.Has(auth.ScopePull) || caller.Has(auth.ScopePush) {
+	if c, mine := PullKeyCluster(caller.Name, []string{"sg-1"}); !ok || !mine || c != "sg-1" || !caller.Has(auth.ScopePull) || caller.Has(auth.ScopePush) {
 		t.Fatalf("pull key = %+v, %v", caller, ok)
 	}
 	if runtime, ok := f.fakes["sg-1"].Secret("billiards-runtime"); !ok || string(runtime.Data["NAKAMA_URL"]) != "https://api.example.com" {

@@ -377,7 +377,7 @@ func pullKeys(t *testing.T, f *fixture) []string {
 	}
 	var names []string
 	for _, k := range keys {
-		if strings.HasPrefix(k.Name, "pull") {
+		if _, ok := PullKeyCluster(k.Name, []string{"us-1", "sg-1"}); ok {
 			names = append(names, k.Name)
 		}
 	}
@@ -397,8 +397,9 @@ func TestRejoinReplacesTheConnection(t *testing.T) {
 	if err := f.svc.Add(ctx, *connection("us-1", "us"), "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if got := pullKeys(t, f); !slices.Equal(got, []string{"pull-us-1"}) {
-		t.Fatalf("pull keys = %v", got)
+	first := pullKeys(t, f)
+	if len(first) != 1 || !strings.HasPrefix(first[0], "pk-") || !strings.HasSuffix(first[0], "-us-1") {
+		t.Fatalf("pull keys = %v", first)
 	}
 	if _, err := f.svc.StartJoin(ctx, "us-1", "us", false, "admin"); err == nil || !strings.Contains(err.Error(), "重新接入") {
 		t.Fatalf("joining us-1 as new: %v", err)
@@ -422,8 +423,8 @@ func TestRejoinReplacesTheConnection(t *testing.T) {
 	if stored.Token != "sa-token-2" {
 		t.Fatalf("stored token = %s", stored.Token)
 	}
-	if got := pullKeys(t, f); !slices.Equal(got, []string{"pull2-us-1"}) {
-		t.Fatalf("pull keys after the rejoin = %v", got)
+	if got := pullKeys(t, f); len(got) != 1 || got[0] == first[0] {
+		t.Fatalf("pull keys after the rejoin = %v, before %v", got, first)
 	}
 	if _, ok := k.fake.Secret(cluster.PullSecretName); !ok {
 		t.Fatal("the cluster got no pull Secret")
@@ -486,25 +487,53 @@ func TestRejoinRotatesTheToken(t *testing.T) {
 	}
 }
 
-// failingSecrets is a cluster that takes no Secret.
-type failingSecrets struct{ *clustertest.Fake }
+// lostAnswer is a cluster that takes a Secret, or not, and whose answer is
+// lost on the way back either way.
+type lostAnswer struct {
+	*clustertest.Fake
+	takes bool
+}
 
-func (failingSecrets) ApplySecret(context.Context, cluster.Secret) error {
+func (l lostAnswer) ApplySecret(ctx context.Context, s cluster.Secret) error {
+	if l.takes {
+		l.Fake.ApplySecret(ctx, s)
+	}
 	return errors.New("connection reset")
 }
 
-// A new pull key that the cluster could not take is revoked, and the one it
-// has stays: image pulls keep working.
-func TestAFailedPullKeyLeavesTheOldOne(t *testing.T) {
+// A renewal that fails revokes nothing: the old key may be the one the
+// cluster still has, and the new one may be the one it took though its
+// answer was lost. The next renewal that succeeds leaves only its own key.
+func TestAFailedPullKeyRenewalRevokesNothing(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	if err := f.svc.Add(ctx, *connection("us-1", "us"), "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.renewPullKey(ctx, failingSecrets{clustertest.New("us-1", 0)}, "us-1", "admin"); err == nil {
-		t.Fatal("renewing the pull key into a cluster that takes no Secret succeeded")
+	us := f.fakes["us-1"]
+	for _, takes := range []bool{false, true} {
+		if err := f.svc.renewPullKey(ctx, lostAnswer{us, takes}, "us-1", "admin"); err == nil {
+			t.Fatal("a renewal whose answer was lost succeeded")
+		}
 	}
-	if got := pullKeys(t, f); !slices.Equal(got, []string{"pull-us-1"}) {
-		t.Fatalf("pull keys = %v", got)
+	if got := pullKeys(t, f); len(got) != 3 {
+		t.Fatalf("pull keys after two failed renewals = %v, want all three kept", got)
+	}
+	// The cluster took the second one: it pulls with it.
+	secret, _ := us.Secret(cluster.PullSecretName)
+	if err := f.svc.renewPullKey(ctx, us, "us-1", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pullKeys(t, f); len(got) != 1 {
+		t.Fatalf("pull keys after a renewal that succeeded = %v", got)
+	}
+	if now, _ := us.Secret(cluster.PullSecretName); string(now.Data[".dockerconfigjson"]) == string(secret.Data[".dockerconfigjson"]) {
+		t.Fatal("the cluster still has the old key")
+	}
+	if c, ok := PullKeyCluster(pullKeys(t, f)[0], []string{"us", "us-1"}); !ok || c != "us-1" {
+		t.Fatalf("PullKeyCluster = %s, %v", c, ok)
+	}
+	if c, ok := PullKeyCluster("pull2-us-1", []string{"us-1"}); !ok || c != "us-1" {
+		t.Fatalf("a pull key of before: %s, %v", c, ok)
 	}
 }
