@@ -1,14 +1,17 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -252,5 +255,77 @@ func TestEndAndForgetMatchesPatchTheirAnnotations(t *testing.T) {
 		if v, ok := forget[key]; !ok || v != nil {
 			t.Fatalf("forget = %v", forget)
 		}
+	}
+}
+
+// pagedRooms serves the game servers a page at a time: page n holds the
+// game server gs-n, and points at the next page until the last.
+func pagedRooms(t *testing.T, pages int, page func(n int, w http.ResponseWriter) bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != gameServers {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("limit") == "" {
+			t.Error("a list without limit")
+		}
+		n := 1
+		if c := r.URL.Query().Get("continue"); c != "" {
+			fmt.Sscanf(c, "page-%d", &n)
+		}
+		if page != nil && !page(n, w) {
+			return
+		}
+		next := ""
+		if n < pages {
+			next = fmt.Sprintf("page-%d", n+1)
+		}
+		fmt.Fprintf(w, `{"metadata":{"continue":%q},"items":[{"metadata":{"name":"gs-%d"},"status":{"state":"Ready"}}]}`, next, n)
+	}
+}
+
+// A cluster lists its game servers a page at a time; GameFleet reads every
+// page.
+func TestRoomsReadsEveryPage(t *testing.T) {
+	client := newTestClient(t, pagedRooms(t, 3, nil))
+	rooms, err := client.Rooms(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms) != 3 {
+		t.Fatalf("%d rooms, want one from each of 3 pages", len(rooms))
+	}
+}
+
+// A page that fails fails the list: the pages read before it are never
+// taken for all the game servers there are.
+func TestRoomsFailWhenAPageFails(t *testing.T) {
+	client := newTestClient(t, pagedRooms(t, 3, func(n int, w http.ResponseWriter) bool {
+		if n == 2 {
+			// The continue token expired, as Kubernetes says when it compacted.
+			w.WriteHeader(http.StatusGone)
+			io.WriteString(w, `{"message":"The provided continue parameter is too old"}`)
+			return false
+		}
+		return true
+	}))
+	if rooms, err := client.Rooms(context.Background()); err == nil {
+		t.Fatalf("rooms = %d, want an error", len(rooms))
+	}
+	if _, err := client.FindByMatch(context.Background(), "m-1"); err == nil {
+		t.Fatal("FindByMatch said no room when it could not read every page")
+	}
+}
+
+// A response larger than GameFleet reads is an error, not a list cut short.
+func TestTooLargeAResponseIsAnError(t *testing.T) {
+	client := newTestClient(t, pagedRooms(t, 1, func(n int, w http.ResponseWriter) bool {
+		w.Write([]byte(`{"metadata":{},"items":[{"metadata":{"name":"gs-1","annotations":{"x":"`))
+		w.Write(bytes.Repeat([]byte("a"), maxResponse))
+		w.Write([]byte(`"}}}]}`))
+		return false
+	}))
+	_, err := client.Rooms(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v, want one that says the response is too large", err)
 	}
 }

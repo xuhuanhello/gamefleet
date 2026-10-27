@@ -61,26 +61,25 @@ type ManagedFleet struct {
 
 // ManagedFleets lists the Fleets GameFleet created in the game namespace.
 func (c *Client) ManagedFleets(ctx context.Context) ([]ManagedFleet, error) {
-	var list struct {
-		Items []struct {
-			Metadata objectMeta `json:"metadata"`
-			Spec     struct {
-				Replicas int `json:"replicas"`
-			} `json:"spec"`
-			Status struct {
-				Replicas          int `json:"replicas"`
-				ReadyReplicas     int `json:"readyReplicas"`
-				AllocatedReplicas int `json:"allocatedReplicas"`
-				ReservedReplicas  int `json:"reservedReplicas"`
-			} `json:"status"`
-		} `json:"items"`
+	type entry = struct {
+		Metadata objectMeta `json:"metadata"`
+		Spec     struct {
+			Replicas int `json:"replicas"`
+		} `json:"spec"`
+		Status struct {
+			Replicas          int `json:"replicas"`
+			ReadyReplicas     int `json:"readyReplicas"`
+			AllocatedReplicas int `json:"allocatedReplicas"`
+			ReservedReplicas  int `json:"reservedReplicas"`
+		} `json:"status"`
 	}
 	query := url.Values{"labelSelector": {LabelDeployment}}
-	if err := c.get(ctx, apiPath("agones.dev", c.namespace, "fleets", ""), query, &list); err != nil {
+	list, err := listAll[entry](ctx, c, apiPath("agones.dev", c.namespace, "fleets", ""), query)
+	if err != nil {
 		return nil, err
 	}
 	fleets := []ManagedFleet{}
-	for _, item := range list.Items {
+	for _, item := range list {
 		id, err := strconv.ParseInt(item.Metadata.Labels[LabelDeployment], 10, 64)
 		if err != nil {
 			continue

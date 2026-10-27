@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -424,6 +425,44 @@ func apiPath(group, namespace, resource, name string) string {
 	return p
 }
 
+// listPage is how many objects GameFleet asks for at a time. A game server
+// with many matches carries a note for each, so pages stay small.
+const listPage = 100
+
+// maxResponse is the most GameFleet reads of one response. A page of
+// listPage game servers is far below it, notes included: Kubernetes keeps an
+// object's annotations under 256 KiB.
+const maxResponse = 64 << 20
+
+// listAll reads every item of a list, a page at a time, the way Kubernetes
+// pages it: from one snapshot, which it keeps for a few minutes. A page that
+// fails, an expired snapshot say, fails the list: the pages read before it
+// are never taken for all the items there are.
+func listAll[T any](ctx context.Context, c *Client, path string, query url.Values) ([]T, error) {
+	q := url.Values{}
+	for k, v := range query {
+		q[k] = v
+	}
+	q.Set("limit", strconv.Itoa(listPage))
+	var all []T
+	for {
+		var page struct {
+			Metadata struct {
+				Continue string `json:"continue"`
+			} `json:"metadata"`
+			Items []T `json:"items"`
+		}
+		if err := c.get(ctx, path, q, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if page.Metadata.Continue == "" {
+			return all, nil
+		}
+		q.Set("continue", page.Metadata.Continue)
+	}
+}
+
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
 	if len(query) > 0 {
 		path += "?" + query.Encode()
@@ -468,9 +507,12 @@ func (c *Client) send(ctx context.Context, method, path, contentType string, in,
 		return fmt.Errorf("%w: cluster %s: %v", ErrUnavailable, c.name, err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
 		return fmt.Errorf("%w: cluster %s: read response: %v", ErrUnavailable, c.name, err)
+	}
+	if len(data) > maxResponse {
+		return fmt.Errorf("cluster %s: %s %s: the response is larger than %d MiB", c.name, method, path, maxResponse>>20)
 	}
 
 	switch code := resp.StatusCode; {

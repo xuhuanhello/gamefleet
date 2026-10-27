@@ -101,40 +101,39 @@ func (c *Client) Namespace() string { return c.namespace }
 
 // Nodes lists the cluster's nodes by name.
 func (c *Client) Nodes(ctx context.Context) ([]Node, error) {
-	var list struct {
-		Items []struct {
-			Metadata objectMeta `json:"metadata"`
-			Spec     struct {
-				Unschedulable bool `json:"unschedulable"`
-				Taints        []struct {
-					Key    string `json:"key"`
-					Value  string `json:"value"`
-					Effect string `json:"effect"`
-				} `json:"taints"`
-			} `json:"spec"`
-			Status struct {
-				Capacity    map[string]string `json:"capacity"`
-				Allocatable map[string]string `json:"allocatable"`
-				Addresses   []struct {
-					Type    string `json:"type"`
-					Address string `json:"address"`
-				} `json:"addresses"`
-				Conditions []struct {
-					Type   string `json:"type"`
-					Status string `json:"status"`
-				} `json:"conditions"`
-				NodeInfo struct {
-					KubeletVersion string `json:"kubeletVersion"`
-					OSImage        string `json:"osImage"`
-				} `json:"nodeInfo"`
-			} `json:"status"`
-		} `json:"items"`
+	type entry = struct {
+		Metadata objectMeta `json:"metadata"`
+		Spec     struct {
+			Unschedulable bool `json:"unschedulable"`
+			Taints        []struct {
+				Key    string `json:"key"`
+				Value  string `json:"value"`
+				Effect string `json:"effect"`
+			} `json:"taints"`
+		} `json:"spec"`
+		Status struct {
+			Capacity    map[string]string `json:"capacity"`
+			Allocatable map[string]string `json:"allocatable"`
+			Addresses   []struct {
+				Type    string `json:"type"`
+				Address string `json:"address"`
+			} `json:"addresses"`
+			Conditions []struct {
+				Type   string `json:"type"`
+				Status string `json:"status"`
+			} `json:"conditions"`
+			NodeInfo struct {
+				KubeletVersion string `json:"kubeletVersion"`
+				OSImage        string `json:"osImage"`
+			} `json:"nodeInfo"`
+		} `json:"status"`
 	}
-	if err := c.get(ctx, apiPath("", "", "nodes", ""), nil, &list); err != nil {
+	list, err := listAll[entry](ctx, c, apiPath("", "", "nodes", ""), nil)
+	if err != nil {
 		return nil, err
 	}
-	nodes := make([]Node, 0, len(list.Items))
-	for _, item := range list.Items {
+	nodes := make([]Node, 0, len(list))
+	for _, item := range list {
 		n := Node{
 			Name:          item.Metadata.Name,
 			Unschedulable: item.Spec.Unschedulable,
@@ -227,14 +226,13 @@ func (c *Client) Pods(ctx context.Context, node string) ([]Pod, error) {
 	if node != "" {
 		query = url.Values{"fieldSelector": {"spec.nodeName=" + node}}
 	}
-	var list struct {
-		Items []podObject `json:"items"`
-	}
-	if err := c.get(ctx, apiPath("", "", "pods", ""), query, &list); err != nil {
+	type entry = podObject
+	list, err := listAll[entry](ctx, c, apiPath("", "", "pods", ""), query)
+	if err != nil {
 		return nil, err
 	}
-	pods := make([]Pod, 0, len(list.Items))
-	for _, item := range list.Items {
+	pods := make([]Pod, 0, len(list))
+	for _, item := range list {
 		pods = append(pods, item.pod())
 	}
 	sort.Slice(pods, func(i, j int) bool {
@@ -317,25 +315,24 @@ func (p podObject) pod() Pod {
 
 // Fleets lists the Fleets in the game namespace by name.
 func (c *Client) Fleets(ctx context.Context) ([]Fleet, error) {
-	var list struct {
-		Items []struct {
-			Metadata objectMeta `json:"metadata"`
-			Spec     struct {
-				Template gameServer `json:"template"`
-			} `json:"spec"`
-			Status struct {
-				Replicas          int `json:"replicas"`
-				ReadyReplicas     int `json:"readyReplicas"`
-				AllocatedReplicas int `json:"allocatedReplicas"`
-				ReservedReplicas  int `json:"reservedReplicas"`
-			} `json:"status"`
-		} `json:"items"`
+	type entry = struct {
+		Metadata objectMeta `json:"metadata"`
+		Spec     struct {
+			Template gameServer `json:"template"`
+		} `json:"spec"`
+		Status struct {
+			Replicas          int `json:"replicas"`
+			ReadyReplicas     int `json:"readyReplicas"`
+			AllocatedReplicas int `json:"allocatedReplicas"`
+			ReservedReplicas  int `json:"reservedReplicas"`
+		} `json:"status"`
 	}
-	if err := c.get(ctx, apiPath("agones.dev", c.namespace, "fleets", ""), nil, &list); err != nil {
+	list, err := listAll[entry](ctx, c, apiPath("agones.dev", c.namespace, "fleets", ""), nil)
+	if err != nil {
 		return nil, err
 	}
-	fleets := make([]Fleet, 0, len(list.Items))
-	for _, item := range list.Items {
+	fleets := make([]Fleet, 0, len(list))
+	for _, item := range list {
 		f := Fleet{
 			Name:      item.Metadata.Name,
 			Replicas:  item.Status.Replicas,
@@ -355,14 +352,13 @@ func (c *Client) Fleets(ctx context.Context) ([]Fleet, error) {
 
 // Rooms lists every GameServer in the game namespace, oldest first.
 func (c *Client) Rooms(ctx context.Context) ([]Room, error) {
-	var list struct {
-		Items []gameServer `json:"items"`
-	}
-	if err := c.get(ctx, apiPath("agones.dev", c.namespace, "gameservers", ""), nil, &list); err != nil {
+	type entry = gameServer
+	list, err := listAll[entry](ctx, c, apiPath("agones.dev", c.namespace, "gameservers", ""), nil)
+	if err != nil {
 		return nil, err
 	}
-	rooms := make([]Room, 0, len(list.Items))
-	for _, gs := range list.Items {
+	rooms := make([]Room, 0, len(list))
+	for _, gs := range list {
 		rooms = append(rooms, c.room(gs))
 	}
 	sort.SliceStable(rooms, func(i, j int) bool { return rooms[i].Created.Before(rooms[j].Created) })
@@ -376,31 +372,30 @@ func (c *Client) Events(ctx context.Context, namespace, object string) ([]Event,
 	if object != "" {
 		query = url.Values{"fieldSelector": {"involvedObject.name=" + object}}
 	}
-	var list struct {
-		Items []struct {
-			Metadata       objectMeta `json:"metadata"`
-			InvolvedObject struct {
-				Kind      string `json:"kind"`
-				Name      string `json:"name"`
-				Namespace string `json:"namespace"`
-			} `json:"involvedObject"`
-			Type          string     `json:"type"`
-			Reason        string     `json:"reason"`
-			Message       string     `json:"message"`
-			Count         int        `json:"count"`
-			LastTimestamp *time.Time `json:"lastTimestamp"`
-			EventTime     *time.Time `json:"eventTime"`
-			Series        *struct {
-				Count            int        `json:"count"`
-				LastObservedTime *time.Time `json:"lastObservedTime"`
-			} `json:"series"`
-		} `json:"items"`
+	type entry = struct {
+		Metadata       objectMeta `json:"metadata"`
+		InvolvedObject struct {
+			Kind      string `json:"kind"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"involvedObject"`
+		Type          string     `json:"type"`
+		Reason        string     `json:"reason"`
+		Message       string     `json:"message"`
+		Count         int        `json:"count"`
+		LastTimestamp *time.Time `json:"lastTimestamp"`
+		EventTime     *time.Time `json:"eventTime"`
+		Series        *struct {
+			Count            int        `json:"count"`
+			LastObservedTime *time.Time `json:"lastObservedTime"`
+		} `json:"series"`
 	}
-	if err := c.get(ctx, apiPath("", namespace, "events", ""), query, &list); err != nil {
+	list, err := listAll[entry](ctx, c, apiPath("", namespace, "events", ""), query)
+	if err != nil {
 		return nil, err
 	}
-	events := make([]Event, 0, len(list.Items))
-	for _, item := range list.Items {
+	events := make([]Event, 0, len(list))
+	for _, item := range list {
 		e := Event{
 			Namespace: item.Metadata.Namespace,
 			Kind:      item.InvolvedObject.Kind,
