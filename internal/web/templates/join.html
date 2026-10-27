@@ -12,7 +12,7 @@
 <div class="panel">
   <div class="panel-head"><h2>新集群</h2></div>
   <form class="form-grid narrow" action="/clusters/new" method="post">
-    <label>集群名<input name="name" value="{{$d.Form.Name}}" placeholder="例如 sg-1" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="63" required></label>
+    <label>集群名<input name="name" value="{{$d.Form.Name}}" placeholder="例如 sg-1" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="50" required></label>
     <label>地区<input name="region" value="{{$d.Form.Region}}" placeholder="例如 sg" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="63" required></label>
     {{template "machineFields" $d.Form}}
     <label class="span check"><input type="checkbox" name="controlPlaneOnly" value="1"{{if $d.Form.ControlPlaneOnly}} checked{{end}}>

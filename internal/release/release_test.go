@@ -730,6 +730,8 @@ func TestWhatMakesABuildReady(t *testing.T) {
 		"a running one with room":          {fleet(0, false), []cluster.Room{full, withRoom}, true},
 		"room only out of allocation":      {fleet(0, false), []cluster.Room{retiringWithRoom}, false},
 		"a Fleet being deleted":            {fleet(3, true), nil, false},
+		"room in a Fleet being deleted":    {fleet(0, true), []cluster.Room{withRoom}, false},
+		"room but no Fleet":                {nil, []cluster.Room{withRoom}, false},
 		"another Fleet's game servers":     {fleet(0, false), []cluster.Room{{ID: "x", Fleet: "other", State: "Allocated", Capacity: 2}}, false},
 	}
 	for name, c := range cases {

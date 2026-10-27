@@ -265,13 +265,19 @@ func (c *Client) FindByMatch(ctx context.Context, matchID string) (*Room, error)
 	if err != nil {
 		return nil, err
 	}
+	return FindMatch(rooms, matchID), nil
+}
+
+// FindMatch returns the room among rooms that runs the match, with the
+// match's ID and players filled in, or nil.
+func FindMatch(rooms []Room, matchID string) *Room {
 	for _, room := range rooms {
 		if m, ok := room.Match(matchID); ok {
 			room.MatchID, room.Players = m.ID, m.Players
-			return &room, nil
+			return &room
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // ForgetMatches removes what GameFleet noted about matches the game server

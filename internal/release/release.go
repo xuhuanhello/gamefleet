@@ -343,12 +343,11 @@ func (s *Service) undeployable(d store.Deployment) error {
 // allocation, or a running one with room left. A Fleet being deleted has
 // none.
 func canTakeAMatch(d store.Deployment, fleets []cluster.ManagedFleet, rooms []cluster.Room) bool {
-	ready := 0
-	for _, f := range fleets {
-		if owns(d, f) && !f.Deleting {
-			ready = f.Ready
-		}
+	i := slices.IndexFunc(fleets, func(f cluster.ManagedFleet) bool { return owns(d, f) })
+	if i < 0 || fleets[i].Deleting {
+		return false
 	}
+	ready := fleets[i].Ready
 	for _, r := range rooms {
 		switch {
 		case r.Fleet != d.Fleet:

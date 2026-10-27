@@ -537,3 +537,35 @@ func TestAFailedPullKeyRenewalRevokesNothing(t *testing.T) {
 		t.Fatalf("a pull key of before: %s, %v", c, ok)
 	}
 }
+
+// A cluster name leaves room for its pull key's name, which a key name of at
+// most 63 characters holds.
+func TestClusterNamesFitTheirPullKeys(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	long := strings.Repeat("a", MaxClusterName)
+	if _, err := f.svc.StartJoin(ctx, long+"a", "x", false, "admin"); err == nil {
+		t.Fatal("a cluster name too long for its pull key was taken")
+	}
+	if err := f.svc.Add(ctx, *connection(long, "x"), "admin"); err != nil {
+		t.Fatalf("the longest cluster name: %v", err)
+	}
+	if got := len(pullKeysOf(t, f, long)); got != 1 {
+		t.Fatalf("%d pull keys for the longest name", got)
+	}
+}
+
+func pullKeysOf(t *testing.T, f *fixture, cluster string) []string {
+	t.Helper()
+	keys, err := f.keys.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, k := range keys {
+		if c, ok := PullKeyCluster(k.Name, []string{cluster}); ok && c == cluster {
+			names = append(names, k.Name)
+		}
+	}
+	return names
+}

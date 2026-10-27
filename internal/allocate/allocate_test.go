@@ -336,7 +336,7 @@ type held struct {
 	release chan struct{}
 }
 
-func (h *held) FindByMatch(ctx context.Context, matchID string) (*cluster.Room, error) {
+func (h *held) Rooms(ctx context.Context) ([]cluster.Room, error) {
 	h.mu.Lock()
 	h.n++
 	n := h.n
@@ -345,7 +345,7 @@ func (h *held) FindByMatch(ctx context.Context, matchID string) (*cluster.Room, 
 	if n == 1 {
 		<-h.release
 	}
-	return h.Fake.FindByMatch(ctx, matchID)
+	return h.Fake.Rooms(ctx)
 }
 
 // Requests for one match that overlap, such as a retry sent while a slow
@@ -386,5 +386,23 @@ func TestOverlappingRequestsForOneMatchShareTheRoom(t *testing.T) {
 	}
 	if results[0].Room.ID != results[1].Room.ID || !results[0].Created || results[1].Created {
 		t.Fatalf("results = %+v; want one room, allocated by the first request", results)
+	}
+}
+
+// A game server whose notes near what Kubernetes allows is taken out of
+// allocation before the next match: allocation itself checks, as the loop
+// may not pass before more matches come.
+func TestAllocationPassesByAGameServerFullOfNotes(t *testing.T) {
+	us := clustertest.New("us-1", 1)
+	us.SetCapacity(50)
+	svc := newService(t, us, clustertest.New("sg-1", 0))
+	us.AddRoom(cluster.Room{ID: "full", Fleet: "billiards-142", State: "Allocated", Capacity: 50,
+		Matches: []cluster.Match{{ID: "m-0"}}, Notes: cluster.FullNotes + 1})
+	result, err := svc.Allocate(context.Background(), request("m-1", "us", "stable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Room.ID == "full" || !us.Retiring("full") {
+		t.Fatalf("allocated to %s; full retiring %v", result.Room.ID, us.Retiring("full"))
 	}
 }

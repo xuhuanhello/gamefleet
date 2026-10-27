@@ -137,11 +137,11 @@ func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, pla
 		return Result{}, err
 	}
 	defer done()
-	existing, err := site.Cluster.FindByMatch(ctx, req.MatchID)
+	rooms, err := site.Cluster.Rooms(ctx)
 	if err != nil {
 		return Result{}, err
 	}
-	if existing != nil {
+	if existing := cluster.FindMatch(rooms, req.MatchID); existing != nil {
 		return Result{Room: *existing}, nil
 	}
 	target, err := s.router.Resolve(ctx, req.Game, req.Channel, req.Compat, req.Region)
@@ -150,6 +150,17 @@ func (s *Service) attempt(ctx context.Context, site sites.Site, req Request, pla
 	}
 	if target.Cluster != site.Name {
 		return Result{}, fmt.Errorf("%w: the route for region %s names cluster %s, but %s serves it", ErrUnavailable, req.Region, target.Cluster, site.Name)
+	}
+	// A game server whose notes near what Kubernetes allows takes no new
+	// match; this allocation would add one note. Every allocation in the
+	// cluster comes through here, one at a time, so no game server gets more
+	// than one note past the check.
+	for _, r := range rooms {
+		if r.Fleet == target.Fleet && r.Notes > cluster.FullNotes && !r.Retiring {
+			if err := site.Cluster.MarkRetiring(ctx, r.ID, true); err != nil {
+				return Result{}, err
+			}
+		}
 	}
 	room, err := site.Cluster.Allocate(ctx, cluster.Allocation{
 		Fleet:   target.Fleet,

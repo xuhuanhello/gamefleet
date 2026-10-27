@@ -190,10 +190,17 @@ func random(n int) string {
 	return strings.ToLower(codes.EncodeToString(b))
 }
 
+// MaxClusterName is the longest cluster name: its pull key's name, which
+// takes 10 more characters, has to fit in the 63 of a key name.
+const MaxClusterName = 50
+
 // StartJoin makes a join code for a new cluster.
 func (s *Service) StartJoin(ctx context.Context, clusterName, region string, controlPlaneOnly bool, actor string) (Join, error) {
 	if !name.MatchString(clusterName) {
 		return Join{}, refuse("集群名只能用小写字母、数字和横线，例如 sg-1")
+	}
+	if len(clusterName) > MaxClusterName {
+		return Join{}, refuse("集群名最多 %d 个字符", MaxClusterName)
 	}
 	if !name.MatchString(region) {
 		return Join{}, refuse("地区只能用小写字母、数字和横线，例如 sg")
@@ -414,6 +421,8 @@ func checkConnection(c Connection, actor string) (store.Cluster, error) {
 	switch {
 	case !name.MatchString(c.Name) || !name.MatchString(c.Region) || !name.MatchString(c.Namespace):
 		return store.Cluster{}, refuse("集群名、地区和命名空间只能用小写字母、数字和横线")
+	case len(c.Name) > MaxClusterName:
+		return store.Cluster{}, refuse("集群名最多 %d 个字符", MaxClusterName)
 	case !httpsURL(c.Server) || !httpsURL(c.JoinURL):
 		return store.Cluster{}, refuse("server 和 joinUrl 要是 https 地址")
 	case err != nil || !strings.Contains(string(ca), "BEGIN CERTIFICATE"):
